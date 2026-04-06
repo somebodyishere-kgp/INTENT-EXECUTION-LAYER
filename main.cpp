@@ -30,6 +30,7 @@ int main(int argc, char* argv[]) {
 
         iee::AdapterRegistry adapterRegistry;
         adapterRegistry.Register(std::make_unique<iee::UIAAdapter>(accessibilityLayer));
+        adapterRegistry.Register(std::make_unique<iee::InputAdapter>());
         adapterRegistry.Register(std::make_unique<iee::FileSystemAdapter>());
 
         iee::CapabilityGraphBuilder graphBuilder;

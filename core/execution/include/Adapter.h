@@ -101,6 +101,20 @@ private:
     IAccessibilityLayer& accessibilityLayer_;
 };
 
+class InputAdapter : public Adapter {
+public:
+    std::string Name() const override;
+    std::vector<Intent> GetCapabilities(const ObserverSnapshot& snapshot, const CapabilityGraph& graph) override;
+    bool CanExecute(const Intent& intent) const override;
+    ExecutionResult Execute(const Intent& intent) override;
+    AdapterScore GetScore() const override;
+
+private:
+    static bool SendUnicodeText(const std::wstring& text);
+    static bool SendLeftClick(int x, int y);
+    static bool SendVirtualKey(WORD keyCode);
+};
+
 class FileSystemAdapter : public Adapter {
 public:
     std::string Name() const override;

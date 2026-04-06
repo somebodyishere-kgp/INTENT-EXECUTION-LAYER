@@ -3,6 +3,8 @@
 #include <Windows.h>
 
 #include <algorithm>
+#include <filesystem>
+#include <fstream>
 #include <iomanip>
 #include <objbase.h>
 #include <sstream>
@@ -24,6 +26,16 @@ std::string Narrow(const std::wstring& value) {
     WideCharToMultiByte(CP_UTF8, 0, value.c_str(), -1, result.data(), requiredBytes, nullptr, nullptr);
     result.pop_back();
     return result;
+}
+
+std::string LowerAscii(std::string value) {
+    std::transform(value.begin(), value.end(), value.begin(), [](unsigned char ch) {
+        if (ch >= 'A' && ch <= 'Z') {
+            return static_cast<char>(ch - 'A' + 'a');
+        }
+        return static_cast<char>(ch);
+    });
+    return value;
 }
 
 std::string EscapeJson(const std::string& value) {
@@ -83,10 +95,66 @@ std::string GuidString() {
     return Narrow(value);
 }
 
+std::string SerializeTraceLine(const ExecutionTrace& trace) {
+    std::ostringstream stream;
+    stream << "{";
+    stream << "\"trace_id\":\"" << EscapeJson(trace.traceId) << "\",";
+    stream << "\"intent\":\"" << EscapeJson(trace.intent) << "\",";
+    stream << "\"target\":\"" << EscapeJson(Narrow(trace.target)) << "\",";
+    stream << "\"adapter\":\"" << EscapeJson(trace.adapter) << "\",";
+    stream << "\"duration_ms\":" << trace.durationMs << ",";
+    stream << "\"status\":\"" << EscapeJson(trace.status) << "\",";
+    stream << "\"message\":\"" << EscapeJson(trace.message) << "\",";
+    stream << "\"verified\":" << (trace.verified ? "true" : "false") << ",";
+    stream << "\"attempts\":" << trace.attempts << ",";
+    stream << "\"snapshot_version\":" << trace.snapshotVersion << ",";
+    stream << "\"control_frame\":" << trace.controlFrame << ",";
+    stream << "\"timestamp_ms\":" << EpochMs(trace.timestamp);
+    stream << "}";
+    return stream.str();
+}
+
 }  // namespace
 
 Telemetry::Telemetry()
-    : startedAt_(std::chrono::steady_clock::now()) {}
+    : startedAt_(std::chrono::steady_clock::now()) {
+    std::error_code ec;
+    persistenceDirectory_ = std::filesystem::current_path(ec) / "artifacts" / "telemetry";
+    if (!ec) {
+        std::filesystem::create_directories(persistenceDirectory_, ec);
+    }
+
+    persistenceEnabled_ = !ec;
+    if (persistenceEnabled_) {
+        StartPersistenceWorker();
+    }
+}
+
+Telemetry::~Telemetry() {
+    StopPersistenceWorker();
+}
+
+void Telemetry::StartPersistenceWorker() {
+    std::lock_guard<std::mutex> lock(persistenceMutex_);
+    if (!persistenceEnabled_ || persistenceThread_.joinable()) {
+        return;
+    }
+
+    persistenceStopRequested_ = false;
+    persistenceThread_ = std::thread(&Telemetry::PersistenceLoop, this);
+}
+
+void Telemetry::StopPersistenceWorker() {
+    {
+        std::lock_guard<std::mutex> lock(persistenceMutex_);
+        persistenceStopRequested_ = true;
+        persistenceCv_.notify_all();
+    }
+
+    if (persistenceThread_.joinable()) {
+        persistenceThread_.join();
+    }
+}
 
 std::string Telemetry::NewTraceId() {
     std::lock_guard<std::mutex> lock(mutex_);
@@ -98,28 +166,33 @@ std::string Telemetry::NewTraceId() {
 }
 
 void Telemetry::LogExecution(const ExecutionTrace& trace) {
-    std::lock_guard<std::mutex> lock(mutex_);
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
 
-    traces_.push_back(trace);
-    if (traces_.size() > kMaxTraces) {
-        traces_.pop_front();
+        traces_.push_back(trace);
+        if (traces_.size() > kMaxTraces) {
+            traces_.pop_front();
+            traceBufferWrapped_ = true;
+        }
+
+        ++totalExecutions_;
+        if (trace.status == "SUCCESS" || trace.status == "PARTIAL") {
+            ++successCount_;
+        } else {
+            ++failureCount_;
+        }
+
+        totalDurationMs_ += static_cast<double>(trace.durationMs);
+
+        AdapterAggregate& aggregate = adapterAggregates_[trace.adapter];
+        ++aggregate.executions;
+        if (trace.status == "SUCCESS" || trace.status == "PARTIAL") {
+            ++aggregate.successes;
+        }
+        aggregate.totalLatencyMs += static_cast<double>(trace.durationMs);
     }
 
-    ++totalExecutions_;
-    if (trace.status == "SUCCESS" || trace.status == "PARTIAL") {
-        ++successCount_;
-    } else {
-        ++failureCount_;
-    }
-
-    totalDurationMs_ += static_cast<double>(trace.durationMs);
-
-    AdapterAggregate& aggregate = adapterAggregates_[trace.adapter];
-    ++aggregate.executions;
-    if (trace.status == "SUCCESS" || trace.status == "PARTIAL") {
-        ++aggregate.successes;
-    }
-    aggregate.totalLatencyMs += static_cast<double>(trace.durationMs);
+    EnqueuePersistence(trace);
 }
 
 void Telemetry::LogAdapterDecision(
@@ -178,6 +251,37 @@ std::vector<ExecutionTrace> Telemetry::RecentExecutions(std::size_t limit) const
     return result;
 }
 
+std::vector<ExecutionTrace> Telemetry::QueryExecutions(
+    std::size_t limit,
+    const std::string& statusFilter,
+    const std::string& adapterFilter) const {
+    const std::string normalizedStatus = LowerAscii(statusFilter);
+    const std::string normalizedAdapter = LowerAscii(adapterFilter);
+
+    std::lock_guard<std::mutex> lock(mutex_);
+
+    std::vector<ExecutionTrace> result;
+    result.reserve(limit);
+
+    for (auto it = traces_.rbegin(); it != traces_.rend(); ++it) {
+        if (!normalizedStatus.empty() && LowerAscii(it->status) != normalizedStatus) {
+            continue;
+        }
+
+        if (!normalizedAdapter.empty() && LowerAscii(it->adapter) != normalizedAdapter) {
+            continue;
+        }
+
+        result.push_back(*it);
+        if (result.size() >= limit) {
+            break;
+        }
+    }
+
+    std::reverse(result.begin(), result.end());
+    return result;
+}
+
 std::optional<ExecutionTrace> Telemetry::FindTrace(const std::string& traceId) const {
     std::lock_guard<std::mutex> lock(mutex_);
 
@@ -193,40 +297,51 @@ std::optional<ExecutionTrace> Telemetry::FindTrace(const std::string& traceId) c
 }
 
 TelemetrySnapshot Telemetry::Snapshot() const {
-    std::lock_guard<std::mutex> lock(mutex_);
-
     TelemetrySnapshot snapshot;
-    snapshot.totalExecutions = totalExecutions_;
-    snapshot.successCount = successCount_;
-    snapshot.failureCount = failureCount_;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
 
-    if (totalExecutions_ > 0) {
-        snapshot.successRate = static_cast<double>(successCount_) / static_cast<double>(totalExecutions_);
-        snapshot.averageLatencyMs = totalDurationMs_ / static_cast<double>(totalExecutions_);
-    }
+        snapshot.totalExecutions = totalExecutions_;
+        snapshot.successCount = successCount_;
+        snapshot.failureCount = failureCount_;
+        snapshot.traceBufferSize = traces_.size();
+        snapshot.traceBufferWrapped = traceBufferWrapped_;
 
-    if (resolutionSamples_ > 0) {
-        snapshot.averageResolutionMs = totalResolutionMs_ / static_cast<double>(resolutionSamples_);
-    }
-
-    snapshot.uptimeMs = static_cast<std::uint64_t>(
-        std::chrono::duration_cast<std::chrono::milliseconds>(
-            std::chrono::steady_clock::now() - startedAt_)
-            .count());
-
-    snapshot.adapterMetrics.reserve(adapterAggregates_.size());
-    for (const auto& entry : adapterAggregates_) {
-        AdapterTelemetryMetrics metrics;
-        metrics.adapter = entry.first;
-        metrics.executions = entry.second.executions;
-        metrics.successes = entry.second.successes;
-
-        if (entry.second.executions > 0) {
-            metrics.successRate = static_cast<double>(entry.second.successes) / static_cast<double>(entry.second.executions);
-            metrics.averageLatencyMs = entry.second.totalLatencyMs / static_cast<double>(entry.second.executions);
+        if (totalExecutions_ > 0) {
+            snapshot.successRate = static_cast<double>(successCount_) / static_cast<double>(totalExecutions_);
+            snapshot.averageLatencyMs = totalDurationMs_ / static_cast<double>(totalExecutions_);
         }
 
-        snapshot.adapterMetrics.push_back(std::move(metrics));
+        if (resolutionSamples_ > 0) {
+            snapshot.averageResolutionMs = totalResolutionMs_ / static_cast<double>(resolutionSamples_);
+        }
+
+        snapshot.uptimeMs = static_cast<std::uint64_t>(
+            std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - startedAt_)
+                .count());
+
+        snapshot.adapterMetrics.reserve(adapterAggregates_.size());
+        for (const auto& entry : adapterAggregates_) {
+            AdapterTelemetryMetrics metrics;
+            metrics.adapter = entry.first;
+            metrics.executions = entry.second.executions;
+            metrics.successes = entry.second.successes;
+
+            if (entry.second.executions > 0) {
+                metrics.successRate = static_cast<double>(entry.second.successes) / static_cast<double>(entry.second.executions);
+                metrics.averageLatencyMs = entry.second.totalLatencyMs / static_cast<double>(entry.second.executions);
+            }
+
+            snapshot.adapterMetrics.push_back(std::move(metrics));
+        }
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(persistenceMutex_);
+        snapshot.persistedTraceCount = persistedTraceCount_;
+        snapshot.droppedPersistenceCount = droppedPersistenceCount_;
+        snapshot.rotationFileIndex = currentFileIndex_;
     }
 
     std::sort(
@@ -237,6 +352,18 @@ TelemetrySnapshot Telemetry::Snapshot() const {
         });
 
     return snapshot;
+}
+
+TelemetryPersistenceStatus Telemetry::PersistenceStatus() const {
+    TelemetryPersistenceStatus status;
+    std::lock_guard<std::mutex> lock(persistenceMutex_);
+    status.enabled = persistenceEnabled_;
+    status.queuedCount = persistenceQueue_.size();
+    status.persistedCount = persistedTraceCount_;
+    status.droppedCount = droppedPersistenceCount_;
+    status.currentFileIndex = currentFileIndex_;
+    status.files.assign(persistedFiles_.begin(), persistedFiles_.end());
+    return status;
 }
 
 std::string Telemetry::SerializeSnapshotJson() const {
@@ -251,6 +378,11 @@ std::string Telemetry::SerializeSnapshotJson() const {
     stream << "\"averageLatencyMs\":" << std::fixed << std::setprecision(2) << snapshot.averageLatencyMs << ",";
     stream << "\"averageResolutionMs\":" << std::fixed << std::setprecision(2) << snapshot.averageResolutionMs << ",";
     stream << "\"uptimeMs\":" << snapshot.uptimeMs << ",";
+    stream << "\"persistedTraceCount\":" << snapshot.persistedTraceCount << ",";
+    stream << "\"droppedPersistenceCount\":" << snapshot.droppedPersistenceCount << ",";
+    stream << "\"traceBufferSize\":" << snapshot.traceBufferSize << ",";
+    stream << "\"traceBufferWrapped\":" << (snapshot.traceBufferWrapped ? "true" : "false") << ",";
+    stream << "\"rotationFileIndex\":" << snapshot.rotationFileIndex << ",";
     stream << "\"adapters\":[";
 
     for (std::size_t index = 0; index < snapshot.adapterMetrics.size(); ++index) {
@@ -279,20 +411,121 @@ std::string Telemetry::SerializeTraceJson(const std::string& traceId) const {
         return "{\"error\":\"trace_not_found\"}";
     }
 
+    return SerializeTraceLine(*trace);
+}
+
+std::string Telemetry::SerializePersistenceJson() const {
+    const TelemetryPersistenceStatus status = PersistenceStatus();
+
     std::ostringstream stream;
     stream << "{";
-    stream << "\"trace_id\":\"" << EscapeJson(trace->traceId) << "\",";
-    stream << "\"intent\":\"" << EscapeJson(trace->intent) << "\",";
-    stream << "\"target\":\"" << EscapeJson(Narrow(trace->target)) << "\",";
-    stream << "\"adapter\":\"" << EscapeJson(trace->adapter) << "\",";
-    stream << "\"duration_ms\":" << trace->durationMs << ",";
-    stream << "\"status\":\"" << EscapeJson(trace->status) << "\",";
-    stream << "\"message\":\"" << EscapeJson(trace->message) << "\",";
-    stream << "\"verified\":" << (trace->verified ? "true" : "false") << ",";
-    stream << "\"attempts\":" << trace->attempts << ",";
-    stream << "\"timestamp_ms\":" << EpochMs(trace->timestamp);
+    stream << "\"enabled\":" << (status.enabled ? "true" : "false") << ",";
+    stream << "\"queuedCount\":" << status.queuedCount << ",";
+    stream << "\"persistedCount\":" << status.persistedCount << ",";
+    stream << "\"droppedCount\":" << status.droppedCount << ",";
+    stream << "\"currentFileIndex\":" << status.currentFileIndex << ",";
+    stream << "\"files\":[";
+
+    for (std::size_t index = 0; index < status.files.size(); ++index) {
+        if (index > 0) {
+            stream << ",";
+        }
+        stream << "\"" << EscapeJson(status.files[index]) << "\"";
+    }
+
+    stream << "]";
     stream << "}";
     return stream.str();
+}
+
+void Telemetry::EnqueuePersistence(const ExecutionTrace& trace) {
+    if (!persistenceEnabled_) {
+        return;
+    }
+
+    std::lock_guard<std::mutex> lock(persistenceMutex_);
+    if (persistenceQueue_.size() >= kMaxPersistenceQueue) {
+        ++droppedPersistenceCount_;
+        return;
+    }
+
+    persistenceQueue_.push_back(trace);
+    persistenceCv_.notify_one();
+}
+
+void Telemetry::PersistenceLoop() {
+    while (true) {
+        ExecutionTrace trace;
+
+        {
+            std::unique_lock<std::mutex> lock(persistenceMutex_);
+            persistenceCv_.wait(lock, [this]() {
+                return persistenceStopRequested_ || !persistenceQueue_.empty();
+            });
+
+            if (persistenceStopRequested_ && persistenceQueue_.empty()) {
+                break;
+            }
+
+            trace = std::move(persistenceQueue_.front());
+            persistenceQueue_.pop_front();
+        }
+
+        PersistTraceLine(trace);
+    }
+}
+
+std::filesystem::path Telemetry::CurrentTraceFilePathLocked() const {
+    std::ostringstream fileName;
+    fileName << "trace_" << std::setw(3) << std::setfill('0') << currentFileIndex_ << ".jsonl";
+    return persistenceDirectory_ / fileName.str();
+}
+
+void Telemetry::PersistTraceLine(const ExecutionTrace& trace) {
+    const std::string line = SerializeTraceLine(trace);
+
+    std::lock_guard<std::mutex> lock(persistenceMutex_);
+    if (!persistenceEnabled_) {
+        return;
+    }
+
+    std::error_code ec;
+    std::filesystem::create_directories(persistenceDirectory_, ec);
+    if (ec) {
+        ++droppedPersistenceCount_;
+        return;
+    }
+
+    const std::size_t writeBytes = line.size() + 1U;
+    if (currentFileBytes_ > 0 && currentFileBytes_ + writeBytes > kMaxTraceFileBytes) {
+        ++currentFileIndex_;
+        currentFileBytes_ = 0;
+    }
+
+    const std::filesystem::path filePath = CurrentTraceFilePathLocked();
+    const std::string fileName = filePath.filename().string();
+    if (persistedFiles_.empty() || persistedFiles_.back() != fileName) {
+        persistedFiles_.push_back(fileName);
+    }
+
+    while (persistedFiles_.size() > kMaxPersistedFiles) {
+        const std::string oldFile = persistedFiles_.front();
+        persistedFiles_.pop_front();
+        std::filesystem::remove(persistenceDirectory_ / oldFile, ec);
+        ec.clear();
+    }
+
+    std::ofstream output(filePath, std::ios::app | std::ios::binary);
+    if (!output.is_open()) {
+        ++droppedPersistenceCount_;
+        return;
+    }
+
+    output << line << '\n';
+    output.flush();
+
+    currentFileBytes_ += writeBytes;
+    ++persistedTraceCount_;
 }
 
 }  // namespace iee

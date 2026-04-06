@@ -58,6 +58,8 @@ struct Context {
     POINT cursor{0, 0};
     HWND activeWindow{nullptr};
     std::uint64_t snapshotTicks{0};
+    std::uint64_t snapshotVersion{0};
+    std::uint64_t controlFrame{0};
 };
 
 struct Constraints {

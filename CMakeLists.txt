@@ -20,6 +20,7 @@ add_library(iee_core
     core/event/src/Logger.cpp
     core/event/src/SystemWatchers.cpp
     core/execution/src/Adapter.cpp
+    core/execution/src/ControlRuntime.cpp
     core/execution/src/ExecutionEngine.cpp
     core/intent/src/Intent.cpp
     core/intent/src/IntentNormalizer.cpp
@@ -113,6 +114,12 @@ add_executable(iee_test_stress_execution
 target_include_directories(iee_test_stress_execution PRIVATE tests)
 target_link_libraries(iee_test_stress_execution PRIVATE iee_core)
 
+add_executable(iee_test_integration_control_runtime
+    tests/integration_control_runtime.cpp
+)
+target_include_directories(iee_test_integration_control_runtime PRIVATE tests)
+target_link_libraries(iee_test_integration_control_runtime PRIVATE iee_core)
+
 add_test(NAME unit_capability_extractor COMMAND iee_test_unit_capability)
 add_test(NAME unit_intent_schema COMMAND iee_test_unit_intent)
 add_test(NAME integration_execution_filesystem COMMAND iee_test_integration_execution)
@@ -122,3 +129,4 @@ add_test(NAME unit_telemetry COMMAND iee_test_unit_telemetry)
 add_test(NAME integration_failure_injection COMMAND iee_test_integration_failure_injection)
 add_test(NAME integration_api_hardening COMMAND iee_test_integration_api_hardening)
 add_test(NAME stress_execution_loop COMMAND iee_test_stress_execution)
+add_test(NAME integration_control_runtime COMMAND iee_test_integration_control_runtime)

@@ -1,11 +1,14 @@
 #pragma once
 
 #include <chrono>
+#include <condition_variable>
 #include <cstdint>
 #include <deque>
+#include <filesystem>
 #include <mutex>
 #include <optional>
 #include <string>
+#include <thread>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -24,6 +27,8 @@ struct ExecutionTrace {
     std::string message;
     bool verified{false};
     int attempts{0};
+    std::uint64_t snapshotVersion{0};
+    std::uint64_t controlFrame{0};
     std::chrono::system_clock::time_point timestamp{std::chrono::system_clock::now()};
 };
 
@@ -43,12 +48,27 @@ struct TelemetrySnapshot {
     double averageLatencyMs{0.0};
     double averageResolutionMs{0.0};
     std::uint64_t uptimeMs{0};
+    std::uint64_t persistedTraceCount{0};
+    std::uint64_t droppedPersistenceCount{0};
+    std::uint64_t traceBufferSize{0};
+    bool traceBufferWrapped{false};
+    int rotationFileIndex{0};
     std::vector<AdapterTelemetryMetrics> adapterMetrics;
+};
+
+struct TelemetryPersistenceStatus {
+    bool enabled{false};
+    std::uint64_t queuedCount{0};
+    std::uint64_t persistedCount{0};
+    std::uint64_t droppedCount{0};
+    int currentFileIndex{0};
+    std::vector<std::string> files;
 };
 
 class Telemetry {
 public:
     Telemetry();
+    ~Telemetry();
 
     std::string NewTraceId();
 
@@ -64,11 +84,17 @@ public:
     void LogResolutionTiming(std::chrono::milliseconds duration);
 
     std::vector<ExecutionTrace> RecentExecutions(std::size_t limit = 50) const;
+    std::vector<ExecutionTrace> QueryExecutions(
+        std::size_t limit,
+        const std::string& statusFilter,
+        const std::string& adapterFilter) const;
     std::optional<ExecutionTrace> FindTrace(const std::string& traceId) const;
     TelemetrySnapshot Snapshot() const;
+    TelemetryPersistenceStatus PersistenceStatus() const;
 
     std::string SerializeSnapshotJson() const;
     std::string SerializeTraceJson(const std::string& traceId) const;
+    std::string SerializePersistenceJson() const;
 
 private:
     struct AdapterAggregate {
@@ -96,6 +122,7 @@ private:
     std::chrono::steady_clock::time_point startedAt_;
 
     std::deque<ExecutionTrace> traces_;
+    bool traceBufferWrapped_{false};
     std::deque<AdapterDecisionEvent> adapterDecisions_;
     std::deque<std::string> failures_;
 
@@ -108,6 +135,30 @@ private:
 
     std::uint64_t resolutionSamples_{0};
     double totalResolutionMs_{0.0};
+
+    mutable std::mutex persistenceMutex_;
+    std::condition_variable persistenceCv_;
+    std::thread persistenceThread_;
+    std::deque<ExecutionTrace> persistenceQueue_;
+    bool persistenceStopRequested_{false};
+    bool persistenceEnabled_{false};
+    std::filesystem::path persistenceDirectory_;
+    std::uint64_t persistedTraceCount_{0};
+    std::uint64_t droppedPersistenceCount_{0};
+    int currentFileIndex_{0};
+    std::size_t currentFileBytes_{0};
+    std::deque<std::string> persistedFiles_;
+
+    void StartPersistenceWorker();
+    void StopPersistenceWorker();
+    void PersistenceLoop();
+    void EnqueuePersistence(const ExecutionTrace& trace);
+    void PersistTraceLine(const ExecutionTrace& trace);
+    std::filesystem::path CurrentTraceFilePathLocked() const;
+
+    static constexpr std::size_t kMaxPersistedFiles = 8;
+    static constexpr std::size_t kMaxTraceFileBytes = 1024 * 1024;
+    static constexpr std::size_t kMaxPersistenceQueue = 4096;
 };
 
 }  // namespace iee

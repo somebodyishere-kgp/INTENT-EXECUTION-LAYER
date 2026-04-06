@@ -1,106 +1,82 @@
-# IEE Context Handoff (v1.1)
+# IEE Context Handoff (v1.2)
 
 ## 1. What Are We Building
-The Intent Execution Engine (IEE): a native deterministic control-plane runtime that exposes software state as intents and executes actions through extensible adapters. In v1.1, the runtime is now observable and real-time-oriented with adapter scoring, telemetry traces, and hardened API contracts.
+The Intent Execution Engine (IEE): a native deterministic control-plane runtime that exposes software state as intents and executes actions through extensible adapters. In v1.2, the runtime now includes continuous control-loop execution, cache invalidation v2, telemetry persistence, and control-plane lifecycle APIs.
 
 ## 2. Current State
-Completed in v1.1:
-- Adapter SDK foundation:
-  - `AdapterScore` contract (`reliability`, `latency`, `confidence`)
-  - adapter and registry SDK-form aliases for extension ergonomics
-  - dynamic registration and score-based `ResolveBest`
-- Reliability system:
-  - rolling success/failure and latency tracking
-  - exponential decay weighting for stale runtime signals
-  - deterministic tie-break on adapter registration order
-- Telemetry system:
-  - per-execution trace id
-  - execution trace log (`trace_id`, intent, target, adapter, duration, status)
-  - adapter decision/failure logging
-  - per-adapter latency/success metrics + resolution timing
-- Real-time readiness:
-  - event priorities (`HIGH`, `MEDIUM`, `LOW`)
-  - execution fast-path adapter cache for unchanged context ticks
-  - registry resolution cache keyed by action+target+snapshot sequence
-- API hardening:
-  - `GET /health`
-  - `GET /intents`
-  - `GET /capabilities`
-  - `POST /execute`
-  - `POST /explain`
-  - strict JSON validation and structured error envelopes
-  - timeout + payload size guards
-  - bounded concurrent request mode for long-running API
-- Test expansion:
-  - CTest suite now 9 tests (unit/integration/scenario/stress)
-  - failure-injection and stress coverage added
+Completed in v1.2:
+- New `ControlRuntime` module with:
+  - start/stop lifecycle
+  - frame-budget loop (`targetFrameMs`)
+  - max-frame run cap
+  - priority-aware queueing and event processing
+  - status/summary serialization
+- Execution engine hardening:
+  - `ExecuteWithBudget(...)` path
+  - cumulative timeout enforcement across retries
+  - fast-path cache v2 (params hash + snapshot version + LRU-style eviction)
+- Intent/registry correctness metadata:
+  - `Context` extended with `snapshotVersion` and `controlFrame`
+  - resolution cache invalidation v2 via `cacheEpoch`
+- Adapter layer:
+  - `InputAdapter` added for deterministic keyboard/mouse fallback path
+- Telemetry v2:
+  - async persistence queue
+  - rotating JSONL files in `artifacts/telemetry`
+  - snapshot/persistence status enrichment
+- API extensions:
+  - `GET /control/status`
+  - `POST /control/start`
+  - `POST /control/stop`
+  - `GET /telemetry/persistence`
+  - `POST /execute` queued/realtime mode with priority
+- CLI observability extensions:
+  - `telemetry --status/--adapter/--limit`
+  - `telemetry --persistence`
+- Validation:
+  - `cmake --build build --config Debug` passes
+  - `ctest --test-dir build -C Debug --output-on-failure` passes (10/10)
 
 Partially built / open for hardening:
-- Telemetry is currently memory-only (no persisted trace history).
-- API strict parser intentionally supports string-valued top-level fields only.
-- CLI table rendering still needs long-target truncation/wrapping.
-
-Verified in this run:
-- `cmake --build build --config Debug` passes.
-- `ctest --test-dir build -C Debug --output-on-failure` passes (9/9).
-- CLI smoke checks pass:
-  - `telemetry`
-  - `trace`
-- API smoke checks pass:
-  - `GET /health`
-  - `POST /execute` returns trace-enabled success JSON.
-
-Real-time readiness status:
-- incremental refresh and priority events are active
-- fast-path execution cache is active
-- resolution cache is active
-- validated under stress loop test coverage
-
-Known latency bottlenecks:
-1. UIA calls remain dominant for complex UI operations.
-2. strict HTTP request parsing adds small per-request overhead.
-3. process-local telemetry serialization can become non-trivial under heavy trace volume.
+- API parser remains intentionally strict and flat (string-valued payload fields).
+- Control runtime executes one queued intent per cycle by design (no batch mode yet).
+- VS Code CMake Tools integration still unavailable in this environment.
 
 ## 3. Last Work Done
-- Added v1.1 adapter scoring and dynamic best-adapter selection in `AdapterRegistry`.
-- Added `Telemetry` module and execution trace propagation through `ExecutionEngine`.
-- Added execution timeout gate and adapter fast-path cache.
-- Added event priorities and watcher priority emissions.
-- Rebuilt API server with hardened routes and structured errors.
-- Added CLI observability commands (`telemetry`, `trace`).
-- Added v1.1 tests:
-  - `unit_adapter_reliability`
-  - `unit_telemetry`
-  - `integration_failure_injection`
-  - `integration_api_hardening`
-  - `stress_execution_loop`
+- Implemented and integrated `ControlRuntime` into API server lifecycle.
+- Added execution cache invalidation v2 and cumulative timeout enforcement in `ExecutionEngine`.
+- Implemented telemetry persistence queue + rotating files in `Telemetry`.
+- Added `InputAdapter` and registered it in runtime composition.
+- Extended CLI/API observability and control-plane routes.
+- Added/updated tests:
+  - `integration_control_runtime`
+  - upgraded `stress_execution_loop` to 1000-cycle percentile validation
+  - extended `integration_api_hardening` with control endpoint coverage
 
 ## 4. Current Problem
-No blocking compiler/runtime defect is active in v1.1 validated scope.
+No blocking compiler/runtime defect is active in v1.2 validated scope.
 
 Known non-blocking issues:
-1. Long-target CLI table formatting remains rough in dense outputs.
-2. Telemetry is not yet persisted to rotating files.
-3. API strict JSON profile may reject clients that send non-string typed payloads.
+1. API payload model is strict and string-only at top level.
+2. Control runtime queue drain is single-intent-per-frame (no batch mode).
+3. VS Code CMake Tools build/test helper remains unavailable.
 
 ## 5. Next Plan
-1. Add telemetry persistence with bounded file rotation.
-2. Add event-versioned invalidation for execution and resolution caches.
-3. Add richer API schema validation (typed fields) while preserving deterministic parser behavior.
-4. Add long-running API concurrency stress tests with explicit latency percentiles.
-5. Add CLI table truncation/wrapping policy for long labels/paths.
+1. Add typed JSON payload parsing path (opt-in strict schema mode) without breaking existing flat payload clients.
+2. Add queue batching policy options for `ControlRuntime` (`maxIntentsPerCycle`).
+3. Add long-running control API soak test with persistence file rotation assertions.
+4. Improve CLI table truncation/wrapping for long labels and paths.
+5. Restore/diagnose VS Code CMake Tools integration for native build/test tasks.
 
 ## 6. Key Decisions Taken
-- Keep architecture boundaries intact; all v1.1 work is additive, not a rewrite.
-- Prefer deterministic adapter selection with runtime scoring and stable tie-breaks.
-- Treat observability as a first-class runtime contract (trace id, decision logs, failure logs).
-- Prioritize low-latency reuse via context-aware fast-path caches.
-- Harden API contracts with explicit structured errors and strict payload shape.
+- Keep v1.1 public interfaces stable and ship v1.2 as additive runtime capability.
+- Enforce runtime correctness through versioned context metadata and cache-epoch invalidation.
+- Treat control loop as a first-class subsystem, not an API side effect.
+- Persist telemetry asynchronously to avoid execution-path I/O stalls.
+- Preserve deterministic behavior for fallback execution (`InputAdapter`) with explicit lower confidence weighting.
 
 ## Multi-Agent Protocol Record
-Agents used in this v1.1 cycle:
-- Architecture Agent (sub-agent): SDK + telemetry + real-time delta design.
-- Core Implementation Agent (sub-agent + primary): implemented runtime changes.
-- Debugging Agent (sub-agent + primary): validated failure-injection strategy and fixes.
-- Refactoring Agent (sub-agent + primary): enforced boundary-safe module changes.
-- Documentation Agent (sub-agent + primary): synchronized all required docs including SDK spec.
+Agents used in this v1.2 cycle:
+- Architecture agent pass: control runtime and cache/telemetry delta mapping.
+- Exploration agent pass: file/symbol integration map and risk scan.
+- Primary implementation path: core runtime, API, telemetry, adapter, tests, and docs synchronization.

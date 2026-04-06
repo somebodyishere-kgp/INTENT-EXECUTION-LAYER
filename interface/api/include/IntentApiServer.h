@@ -3,8 +3,10 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <string>
 
+#include "ControlRuntime.h"
 #include "ExecutionEngine.h"
 #include "IntentRegistry.h"
 #include "Telemetry.h"
@@ -20,10 +22,12 @@ public:
 
 private:
     std::string HandleRequest(const std::string& request);
+    ControlRuntime& EnsureControlRuntime();
 
     IntentRegistry& registry_;
     ExecutionEngine& executionEngine_;
     Telemetry& telemetry_;
+    std::unique_ptr<ControlRuntime> controlRuntime_;
     std::chrono::steady_clock::time_point startedAt_;
 };
 

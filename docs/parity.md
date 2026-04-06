@@ -1,26 +1,28 @@
-# IEE v1.1 Requirement Parity
+# IEE v1.2 Requirement Parity
 
 ## Objective Coverage
 
 | Phase / Requirement | Expected | Implemented | Status |
 |---|---|---|---|
-| Phase 1 Adapter SDK | stable external adapter contract and registration model | Adapter SDK methods (`Name`, `GetCapabilities`, `Execute`, `GetScore`, `Subscribe`) plus `RegisterAdapter`/`GetAdapters`/`ResolveBest` | Met |
-| Phase 2 Reliability scoring | rolling reliability/latency + decay + deterministic tie-break | EMA runtime metrics, exponential decay, score formula, tie-break by registration order | Met |
-| Phase 3 Telemetry | execution traces + adapter decision/failure logging + metrics | `Telemetry` module, trace id, execution logs, adapter metrics, resolver timing | Met |
-| Phase 4 Real-time readiness | priority events + incremental update path + fast path reuse | `EventPriority`, watcher priority publish, resolution cache, execution adapter fast path | Met |
-| Phase 5 Failure injection | deterministic behavior under failure and delay scenarios | new integration test coverage for forced failure, fallback, disappearing target, timeout | Met |
-| Phase 6 API hardening | `/health`, `/intents`, `/capabilities`, `/execute`, `/explain` + strict errors | routes implemented, structured JSON errors, payload/timeout guards, bounded concurrent mode | Met |
-| Phase 7 Test expansion | stress + robustness + API checks | CTest expanded to 9 tests (unit/integration/scenario/stress) | Met |
+| Phase 1 Adapter SDK baseline | stable adapter contract and deterministic resolution | preserved v1.1 SDK + scoring path | Met |
+| Phase 2 Reliability scoring | runtime reliability/latency/confidence balancing | EMA + decay + deterministic tie-break retained | Met |
+| Phase 3 Telemetry observability | trace IDs, adapter metrics, resolver timing | retained and extended with proof fields (`snapshotVersion`, `controlFrame`) | Met |
+| Phase 4 Real-time control runtime | continuous control loop, budgeted cycles, priority scheduling | new `ControlRuntime` with frame budget, queue priorities, status/summaries | Met |
+| Phase 5 Cache invalidation v2 | stale cache protection beyond snapshot-only checks | execution fast-path key includes params hash + snapshot version; registry cache adds `cacheEpoch` | Met |
+| Phase 6 Telemetry persistence | async persistence queue + rotating files | telemetry JSONL persistence under `artifacts/telemetry` with bounded queue/files | Met |
+| Phase 7 Control API | runtime control-plane endpoints | `POST /control/start`, `POST /control/stop`, `GET /control/status` | Met |
+| Phase 8 Input fallback path | deterministic keyboard/mouse fallback adapter | `InputAdapter` implemented and registered | Met |
+| Phase 9 High-frequency testing | 1000+ cycles with percentile checks | stress test upgraded to 1000 cycles with p50/p95/p99 assertions; control runtime integration added | Met |
 
 ## Verified Runtime Behaviors
-- Best adapter selection is now score-based and deterministic under tie conditions.
-- Every execution emits a trace id and telemetry sample.
-- Timeout gate converts delayed responses into explicit structured failures.
-- API returns strict structured error objects for malformed payloads.
-- Explain endpoint returns ranked candidates and ambiguity state.
-- Stress loop validates repeated create/delete execution stability.
+- Control runtime starts/stops cleanly and reports frame/intent/latency summary.
+- Queued execution mode through API is accepted only when control runtime is active.
+- Fast-path execution cache rejects stale entries when params or snapshot version drift.
+- Registry resolve cache invalidates on epoch changes triggered by refresh/interaction updates.
+- Telemetry persistence queue writes bounded rotating trace files and exposes status via CLI/API.
+- High-frequency stress loop validates 1000-cycle latency distribution gates.
 
 ## Residual Gaps (Non-Blocking)
-- API strict JSON parser currently supports string-valued top-level fields only.
-- Telemetry is process-local memory (no persisted history across restarts).
-- Long target rendering in CLI tables still needs truncation/wrapping policy.
+- API parser remains intentionally strict and flat (string-valued fields).
+- Control runtime queue policy is currently single-intent-per-cycle (no batch mode).
+- CMake Tools extension build/test integration remains unavailable in this environment.

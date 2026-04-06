@@ -54,6 +54,7 @@ Context BuildContext(const ObserverSnapshot& snapshot) {
     context.cursor = snapshot.cursorPosition;
     context.activeWindow = snapshot.activeWindow;
     context.snapshotTicks = ToTicks(snapshot.capturedAt);
+    context.snapshotVersion = snapshot.sequence;
 
     std::error_code ec;
     context.workingDirectory = std::filesystem::current_path(ec).wstring();
@@ -222,6 +223,192 @@ AdapterScore UIAAdapter::GetScore() const {
     score.latency = 60.0F;
     score.confidence = 0.90F;
     return score;
+}
+
+std::string InputAdapter::Name() const {
+    return "InputAdapter";
+}
+
+std::vector<Intent> InputAdapter::GetCapabilities(const ObserverSnapshot& snapshot, const CapabilityGraph&) {
+    std::vector<Intent> intents;
+    intents.reserve(snapshot.uiElements.size() * 2U);
+
+    for (const auto& element : snapshot.uiElements) {
+        if (element.controlType == UiControlType::Button || element.controlType == UiControlType::MenuItem ||
+            element.controlType == UiControlType::ListItem) {
+            Intent activate;
+            activate.action = IntentAction::Activate;
+            activate.name = ToString(IntentAction::Activate);
+            activate.target = BuildTargetFromElement(element);
+            activate.context = BuildContext(snapshot);
+            activate.confidence = 0.60F;
+            activate.source = "input";
+            activate.id = "input:" + element.id + ":activate";
+            intents.push_back(std::move(activate));
+        }
+
+        if (element.controlType == UiControlType::TextBox || element.supportsValue) {
+            Intent setValue;
+            setValue.action = IntentAction::SetValue;
+            setValue.name = ToString(IntentAction::SetValue);
+            setValue.target = BuildTargetFromElement(element);
+            setValue.context = BuildContext(snapshot);
+            setValue.confidence = 0.55F;
+            setValue.source = "input";
+            setValue.id = "input:" + element.id + ":set_value";
+            setValue.params.values["value"] = L"";
+            intents.push_back(std::move(setValue));
+        }
+    }
+
+    return intents;
+}
+
+bool InputAdapter::CanExecute(const Intent& intent) const {
+    if (intent.target.type != TargetType::UiElement) {
+        return false;
+    }
+
+    return intent.action == IntentAction::Activate || intent.action == IntentAction::SetValue ||
+        intent.action == IntentAction::Select;
+}
+
+ExecutionResult InputAdapter::Execute(const Intent& intent) {
+    const auto start = std::chrono::steady_clock::now();
+
+    ExecutionResult result;
+    result.method = "input";
+
+    const auto finalize = [&start](ExecutionResult* value) {
+        const auto end = std::chrono::steady_clock::now();
+        value->duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
+    };
+
+    const HWND activeWindow = intent.context.activeWindow != nullptr ? intent.context.activeWindow : GetForegroundWindow();
+    if (activeWindow == nullptr) {
+        result.status = ExecutionStatus::FAILED;
+        result.message = "No active window available for input simulation";
+        result.verified = false;
+        finalize(&result);
+        return result;
+    }
+
+    SetForegroundWindow(activeWindow);
+
+    bool ok = false;
+    switch (intent.action) {
+    case IntentAction::Activate:
+    case IntentAction::Select:
+        if (intent.target.screenCenter.x != 0 || intent.target.screenCenter.y != 0) {
+            ok = SendLeftClick(intent.target.screenCenter.x, intent.target.screenCenter.y);
+        } else {
+            ok = SendVirtualKey(VK_RETURN);
+        }
+        result.verified = ok;
+        result.status = ok ? ExecutionStatus::PARTIAL : ExecutionStatus::FAILED;
+        result.message = ok ? "Input action sent" : "Input action failed";
+        break;
+    case IntentAction::SetValue: {
+        const std::wstring value = intent.params.Get("value");
+        if (value.empty()) {
+            result.status = ExecutionStatus::FAILED;
+            result.verified = false;
+            result.message = "Missing parameter: value";
+            finalize(&result);
+            return result;
+        }
+
+        bool focused = true;
+        if (intent.target.screenCenter.x != 0 || intent.target.screenCenter.y != 0) {
+            focused = SendLeftClick(intent.target.screenCenter.x, intent.target.screenCenter.y);
+        }
+
+        ok = focused && SendUnicodeText(value);
+        result.verified = ok;
+        result.status = ok ? ExecutionStatus::PARTIAL : ExecutionStatus::FAILED;
+        result.message = ok ? "Text input sent" : "Text input failed";
+        break;
+    }
+    default:
+        result.status = ExecutionStatus::FAILED;
+        result.verified = false;
+        result.message = "Unsupported action for input adapter";
+        break;
+    }
+
+    finalize(&result);
+    return result;
+}
+
+AdapterScore InputAdapter::GetScore() const {
+    AdapterScore score;
+    score.reliability = 0.58F;
+    score.latency = 18.0F;
+    score.confidence = 0.42F;
+    return score;
+}
+
+bool InputAdapter::SendUnicodeText(const std::wstring& text) {
+    for (const wchar_t ch : text) {
+        INPUT keyDown{};
+        keyDown.type = INPUT_KEYBOARD;
+        keyDown.ki.wScan = ch;
+        keyDown.ki.dwFlags = KEYEVENTF_UNICODE;
+
+        INPUT keyUp{};
+        keyUp.type = INPUT_KEYBOARD;
+        keyUp.ki.wScan = ch;
+        keyUp.ki.dwFlags = KEYEVENTF_UNICODE | KEYEVENTF_KEYUP;
+
+        INPUT inputs[2] = {keyDown, keyUp};
+        const UINT sent = SendInput(2, inputs, sizeof(INPUT));
+        if (sent != 2) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+bool InputAdapter::SendLeftClick(int x, int y) {
+    const int screenWidth = std::max(1, GetSystemMetrics(SM_CXSCREEN) - 1);
+    const int screenHeight = std::max(1, GetSystemMetrics(SM_CYSCREEN) - 1);
+
+    const LONG normalizedX = static_cast<LONG>((static_cast<double>(x) * 65535.0) / static_cast<double>(screenWidth));
+    const LONG normalizedY = static_cast<LONG>((static_cast<double>(y) * 65535.0) / static_cast<double>(screenHeight));
+
+    INPUT move{};
+    move.type = INPUT_MOUSE;
+    move.mi.dx = normalizedX;
+    move.mi.dy = normalizedY;
+    move.mi.dwFlags = MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE;
+
+    INPUT down{};
+    down.type = INPUT_MOUSE;
+    down.mi.dwFlags = MOUSEEVENTF_LEFTDOWN;
+
+    INPUT up{};
+    up.type = INPUT_MOUSE;
+    up.mi.dwFlags = MOUSEEVENTF_LEFTUP;
+
+    INPUT inputs[3] = {move, down, up};
+    const UINT sent = SendInput(3, inputs, sizeof(INPUT));
+    return sent == 3;
+}
+
+bool InputAdapter::SendVirtualKey(WORD keyCode) {
+    INPUT keyDown{};
+    keyDown.type = INPUT_KEYBOARD;
+    keyDown.ki.wVk = keyCode;
+
+    INPUT keyUp{};
+    keyUp.type = INPUT_KEYBOARD;
+    keyUp.ki.wVk = keyCode;
+    keyUp.ki.dwFlags = KEYEVENTF_KEYUP;
+
+    INPUT inputs[2] = {keyDown, keyUp};
+    const UINT sent = SendInput(2, inputs, sizeof(INPUT));
+    return sent == 2;
 }
 
 Intent UIAAdapter::BuildIntentFromElement(const UiElement& element, const ObserverSnapshot& snapshot, IntentAction action) const {

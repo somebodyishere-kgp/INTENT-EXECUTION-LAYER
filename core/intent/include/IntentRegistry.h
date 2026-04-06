@@ -43,9 +43,11 @@ private:
         IntentAction action{IntentAction::Unknown};
         std::wstring target;
         std::uint64_t snapshotSequence{0};
+        std::uint64_t cacheEpoch{0};
 
         bool operator==(const ResolutionCacheKey& other) const {
-            return action == other.action && target == other.target && snapshotSequence == other.snapshotSequence;
+            return action == other.action && target == other.target && snapshotSequence == other.snapshotSequence &&
+                cacheEpoch == other.cacheEpoch;
         }
     };
 
@@ -54,7 +56,8 @@ private:
             const std::size_t actionHash = std::hash<int>{}(static_cast<int>(key.action));
             const std::size_t targetHash = std::hash<std::wstring>{}(key.target);
             const std::size_t sequenceHash = std::hash<std::uint64_t>{}(key.snapshotSequence);
-            return actionHash ^ (targetHash << 1U) ^ (sequenceHash << 2U);
+            const std::size_t epochHash = std::hash<std::uint64_t>{}(key.cacheEpoch);
+            return actionHash ^ (targetHash << 1U) ^ (sequenceHash << 2U) ^ (epochHash << 3U);
         }
     };
 
@@ -75,6 +78,7 @@ private:
     CapabilityGraph graph_;
     std::vector<Intent> intents_;
     std::unordered_map<std::string, std::uint64_t> recencyByIntentId_;
+    std::uint64_t cacheEpoch_{0};
     mutable std::unordered_map<ResolutionCacheKey, ResolutionResult, ResolutionCacheKeyHash> resolutionCache_;
 
     EventBus::SubscriptionId uiChangedSubscriptionId_{0};

@@ -114,6 +114,7 @@ void IntentRegistry::Refresh() {
         lastSnapshot_ = snapshot;
         graph_ = std::move(newGraph);
         intents_ = std::move(newIntents);
+        ++cacheEpoch_;
         resolutionCache_.clear();
     }
 
@@ -167,6 +168,7 @@ void IntentRegistry::RefreshUiIncremental() {
         std::unique_lock<std::shared_mutex> lock(mutex_);
         lastSnapshot_ = snapshot;
         ReplaceIntentsBySource("uia", std::move(uiIntents));
+        ++cacheEpoch_;
         resolutionCache_.clear();
     }
 
@@ -213,6 +215,7 @@ void IntentRegistry::RefreshFileSystemIncremental() {
         std::unique_lock<std::shared_mutex> lock(mutex_);
         lastSnapshot_ = snapshot;
         ReplaceIntentsBySource("filesystem", std::move(fsIntents));
+        ++cacheEpoch_;
         resolutionCache_.clear();
     }
 
@@ -248,6 +251,7 @@ ResolutionResult IntentRegistry::Resolve(IntentAction action, const std::wstring
         key.action = action;
         key.target = NormalizeTarget(target);
         key.snapshotSequence = lastSnapshot_.sequence;
+        key.cacheEpoch = cacheEpoch_;
 
         const auto cacheIt = resolutionCache_.find(key);
         if (cacheIt != resolutionCache_.end()) {
@@ -270,7 +274,7 @@ ResolutionResult IntentRegistry::Resolve(IntentAction action, const std::wstring
 
     {
         std::unique_lock<std::shared_mutex> lock(mutex_);
-        if (key.snapshotSequence == lastSnapshot_.sequence) {
+        if (key.snapshotSequence == lastSnapshot_.sequence && key.cacheEpoch == cacheEpoch_) {
             resolutionCache_[key] = result;
             if (resolutionCache_.size() > 512U) {
                 std::size_t removed = 0;
@@ -313,6 +317,7 @@ void IntentRegistry::RecordInteraction(const std::string& intentId) {
 
     std::unique_lock<std::shared_mutex> lock(mutex_);
     recencyByIntentId_[intentId] = NowTicks();
+    ++cacheEpoch_;
     resolutionCache_.clear();
 }
 

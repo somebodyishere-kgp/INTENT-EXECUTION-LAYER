@@ -7,6 +7,7 @@
 #include <array>
 #include <atomic>
 #include <charconv>
+#include <limits>
 #include <map>
 #include <set>
 #include <sstream>
@@ -306,6 +307,46 @@ bool IsFileAction(IntentAction action) {
     return action == IntentAction::Create || action == IntentAction::Delete || action == IntentAction::Move;
 }
 
+std::string ReadPayloadValue(const std::map<std::string, std::string>& payload, std::initializer_list<const char*> keys) {
+    for (const char* key : keys) {
+        const auto it = payload.find(key);
+        if (it != payload.end()) {
+            return it->second;
+        }
+    }
+    return "";
+}
+
+bool ParseInt32(const std::string& value, int* output) {
+    if (value.empty() || output == nullptr) {
+        return false;
+    }
+
+    int parsed = 0;
+    const auto [ptr, error] = std::from_chars(value.data(), value.data() + value.size(), parsed);
+    if (error != std::errc() || ptr != value.data() + value.size()) {
+        return false;
+    }
+
+    *output = parsed;
+    return true;
+}
+
+bool ParseUint64(const std::string& value, std::uint64_t* output) {
+    if (value.empty() || output == nullptr) {
+        return false;
+    }
+
+    std::uint64_t parsed = 0;
+    const auto [ptr, error] = std::from_chars(value.data(), value.data() + value.size(), parsed);
+    if (error != std::errc() || ptr != value.data() + value.size()) {
+        return false;
+    }
+
+    *output = parsed;
+    return true;
+}
+
 }  // namespace
 
 IntentApiServer::IntentApiServer(IntentRegistry& registry, ExecutionEngine& executionEngine, Telemetry& telemetry)
@@ -467,6 +508,18 @@ std::string IntentApiServer::HandleRequestForTesting(const std::string& request)
     return HandleRequest(request);
 }
 
+ControlRuntime& IntentApiServer::EnsureControlRuntime() {
+    if (!controlRuntime_) {
+        controlRuntime_ = std::make_unique<ControlRuntime>(
+            registry_,
+            executionEngine_,
+            executionEngine_.Events(),
+            telemetry_);
+    }
+
+    return *controlRuntime_;
+}
+
 std::string IntentApiServer::HandleRequest(const std::string& request) {
     const std::size_t firstSpace = request.find(' ');
     const std::size_t secondSpace = firstSpace == std::string::npos ? std::string::npos : request.find(' ', firstSpace + 1U);
@@ -489,6 +542,7 @@ std::string IntentApiServer::HandleRequest(const std::string& request) {
         const auto serverUptimeMs = std::chrono::duration_cast<std::chrono::milliseconds>(
             std::chrono::steady_clock::now() - startedAt_)
                                          .count();
+        const bool controlActive = controlRuntime_ != nullptr && controlRuntime_->Status().active;
 
         std::ostringstream json;
         json << "{";
@@ -497,7 +551,9 @@ std::string IntentApiServer::HandleRequest(const std::string& request) {
         json << "\"server_uptime_ms\":" << serverUptimeMs << ",";
         json << "\"total_executions\":" << snapshot.totalExecutions << ",";
         json << "\"success_rate\":" << snapshot.successRate << ",";
-        json << "\"average_latency_ms\":" << snapshot.averageLatencyMs;
+        json << "\"average_latency_ms\":" << snapshot.averageLatencyMs << ",";
+        json << "\"control_active\":" << (controlActive ? "true" : "false") << ",";
+        json << "\"persisted_traces\":" << snapshot.persistedTraceCount;
         json << "}";
 
         return BuildResponse(200, "OK", json.str());
@@ -560,6 +616,74 @@ std::string IntentApiServer::HandleRequest(const std::string& request) {
             json << "}";
         }
         json << "]}";
+
+        return BuildResponse(200, "OK", json.str());
+    }
+
+    if (method == "GET" && path == "/telemetry/persistence") {
+        return BuildResponse(200, "OK", telemetry_.SerializePersistenceJson());
+    }
+
+    if (method == "GET" && path == "/control/status") {
+        if (!controlRuntime_) {
+            ControlRuntimeSnapshot empty;
+            return BuildResponse(200, "OK", ControlRuntime::SerializeSnapshotJson(empty));
+        }
+
+        return BuildResponse(200, "OK", ControlRuntime::SerializeSnapshotJson(controlRuntime_->Status()));
+    }
+
+    if (method == "POST" && path == "/control/start") {
+        std::map<std::string, std::string> payload;
+        if (!body.empty()) {
+            std::string jsonError;
+            if (!ParseFlatJsonObject(body, &payload, &jsonError)) {
+                return BuildErrorResponse(400, "Bad Request", "invalid_json", jsonError);
+            }
+        }
+
+        ControlRuntimeConfig config;
+        int targetFrameMs = 0;
+        if (ParseInt32(
+                ReadPayloadValue(payload, {"latencyBudgetMs", "latency_budget_ms", "targetFrameMs", "target_frame_ms"}),
+                &targetFrameMs)) {
+            config.targetFrameMs = targetFrameMs;
+        }
+
+        std::uint64_t maxFrames = 0;
+        if (ParseUint64(ReadPayloadValue(payload, {"maxFrames", "max_frames"}), &maxFrames)) {
+            if (maxFrames > 1000000ULL) {
+                return BuildErrorResponse(400, "Bad Request", "max_frames_exceeded", "maxFrames exceeds safety limit");
+            }
+            config.maxFrames = maxFrames;
+        }
+
+        ControlRuntime& runtime = EnsureControlRuntime();
+        std::string message;
+        const bool started = runtime.Start(config, &message);
+        const ControlRuntimeSnapshot status = runtime.Status();
+
+        std::ostringstream json;
+        json << "{";
+        json << "\"started\":" << (started ? "true" : "false") << ",";
+        json << "\"message\":\"" << EscapeJson(message) << "\",";
+        json << "\"status\":" << ControlRuntime::SerializeSnapshotJson(status);
+        json << "}";
+
+        return BuildResponse(started ? 200 : 409, started ? "OK" : "Conflict", json.str());
+    }
+
+    if (method == "POST" && path == "/control/stop") {
+        if (!controlRuntime_) {
+            return BuildErrorResponse(409, "Conflict", "control_not_running", "Control runtime is not running");
+        }
+
+        const ControlRuntimeSummary summary = controlRuntime_->Stop();
+        std::ostringstream json;
+        json << "{";
+        json << "\"summary\":" << ControlRuntime::SerializeSummaryJson(summary) << ",";
+        json << "\"persistence\":" << telemetry_.SerializePersistenceJson();
+        json << "}";
 
         return BuildResponse(200, "OK", json.str());
     }
@@ -685,6 +809,33 @@ std::string IntentApiServer::HandleRequest(const std::string& request) {
             }
         } else {
             return BuildErrorResponse(400, "Bad Request", "unsupported_action", "Action is not executable");
+        }
+
+        const std::string executionMode = ToAsciiLower(ReadPayloadValue(payload, {"mode", "execution_mode"}));
+        if (executionMode == "queued" || executionMode == "realtime") {
+            if (!controlRuntime_ || !controlRuntime_->Status().active) {
+                return BuildErrorResponse(409, "Conflict", "control_not_running", "Control runtime must be running for queued execution");
+            }
+
+            const std::string priorityRaw = ToAsciiLower(ReadPayloadValue(payload, {"priority"}));
+            ControlPriority priority = ControlPriority::Medium;
+            if (priorityRaw == "high") {
+                priority = ControlPriority::High;
+            } else if (priorityRaw == "low") {
+                priority = ControlPriority::Low;
+            }
+
+            if (!controlRuntime_->EnqueueIntent(intent, priority)) {
+                return BuildErrorResponse(409, "Conflict", "control_enqueue_failed", "Unable to enqueue intent");
+            }
+
+            std::ostringstream queuedJson;
+            queuedJson << "{";
+            queuedJson << "\"queued\":true,";
+            queuedJson << "\"priority\":\"" << EscapeJson(priorityRaw.empty() ? "medium" : priorityRaw) << "\",";
+            queuedJson << "\"status\":" << ControlRuntime::SerializeSnapshotJson(controlRuntime_->Status());
+            queuedJson << "}";
+            return BuildResponse(202, "Accepted", queuedJson.str());
         }
 
         const ExecutionResult result = executionEngine_.Execute(intent);

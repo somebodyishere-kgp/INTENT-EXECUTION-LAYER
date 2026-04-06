@@ -105,6 +105,12 @@ int main() {
         }
 
         {
+            const std::string response = api.HandleRequestForTesting(BuildHttpRequest("GET", "/telemetry/persistence"));
+            AssertTrue(HasStatus(response, 200), "GET /telemetry/persistence should return 200");
+            AssertTrue(response.find("\"enabled\"") != std::string::npos, "Persistence response should include enabled field");
+        }
+
+        {
             const std::string response = api.HandleRequestForTesting(BuildHttpRequest("GET", "/capabilities"));
             AssertTrue(HasStatus(response, 200), "GET /capabilities should return 200");
             AssertTrue(response.find("\"capabilities\"") != std::string::npos, "Capabilities response should include capabilities array");
@@ -127,6 +133,32 @@ int main() {
             if (std::filesystem::exists(tempPath)) {
                 std::filesystem::remove(tempPath);
             }
+        }
+
+        {
+            const std::string response = api.HandleRequestForTesting(
+                BuildHttpRequest("POST", "/control/start", "{\"latencyBudgetMs\":\"2\"}"));
+            AssertTrue(HasStatus(response, 200), "POST /control/start should return 200");
+            AssertTrue(response.find("\"started\":true") != std::string::npos, "Control start should report started=true");
+        }
+
+        {
+            const std::string status = api.HandleRequestForTesting(BuildHttpRequest("GET", "/control/status"));
+            AssertTrue(HasStatus(status, 200), "GET /control/status should return 200");
+            AssertTrue(status.find("\"active\":true") != std::string::npos, "Control status should report active runtime");
+        }
+
+        {
+            const std::string body = "{\"action\":\"activate\",\"target\":\"Save\",\"mode\":\"queued\",\"priority\":\"high\"}";
+            const std::string response = api.HandleRequestForTesting(BuildHttpRequest("POST", "/execute", body));
+            AssertTrue(HasStatus(response, 202), "Queued execute should return 202");
+            AssertTrue(response.find("\"queued\":true") != std::string::npos, "Queued execute should report queued=true");
+        }
+
+        {
+            const std::string response = api.HandleRequestForTesting(BuildHttpRequest("POST", "/control/stop", "{}"));
+            AssertTrue(HasStatus(response, 200), "POST /control/stop should return 200");
+            AssertTrue(response.find("\"summary\"") != std::string::npos, "Control stop response should include summary");
         }
 
         {

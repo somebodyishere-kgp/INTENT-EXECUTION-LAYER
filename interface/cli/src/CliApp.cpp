@@ -65,6 +65,30 @@ bool HasOption(const ParsedCommand& command, const std::string& key) {
     return command.options.find(key) != command.options.end();
 }
 
+std::size_t ReadSizeOption(
+    const ParsedCommand& command,
+    const std::string& key,
+    std::size_t defaultValue,
+    std::size_t maxValue) {
+    const std::string value = ReadOption(command, key);
+    if (value.empty()) {
+        return defaultValue;
+    }
+
+    unsigned long long parsed = 0;
+    const auto [ptr, error] = std::from_chars(value.data(), value.data() + value.size(), parsed);
+    if (error != std::errc() || ptr != value.data() + value.size()) {
+        return defaultValue;
+    }
+
+    const std::size_t bounded = static_cast<std::size_t>(std::min<unsigned long long>(parsed, maxValue));
+    if (bounded == 0U) {
+        return defaultValue;
+    }
+
+    return bounded;
+}
+
 std::uint16_t ReadPort(const ParsedCommand& command, std::uint16_t defaultValue) {
     const std::string value = ReadOption(command, "port");
     if (value.empty()) {
@@ -394,7 +418,8 @@ int CliApp::HandleApi(const ParsedCommand& command) {
     const bool singleRequest = HasOption(command, "once");
 
     std::cout << "Starting IEE local API on 127.0.0.1:" << port << "\n";
-    std::cout << "Routes: GET /health, GET /intents, GET /capabilities, POST /execute, POST /explain\n";
+    std::cout << "Routes: GET /health, GET /intents, GET /capabilities, GET /control/status, "
+                 "GET /telemetry/persistence, POST /execute, POST /explain, POST /control/start, POST /control/stop\n";
     if (singleRequest) {
         std::cout << "Mode: single request\n";
     }
@@ -404,6 +429,69 @@ int CliApp::HandleApi(const ParsedCommand& command) {
 }
 
 int CliApp::HandleTelemetry(const ParsedCommand& command) {
+    if (HasOption(command, "persistence")) {
+        if (HasOption(command, "json")) {
+            std::cout << telemetry_.SerializePersistenceJson() << "\n";
+            return 0;
+        }
+
+        const TelemetryPersistenceStatus status = telemetry_.PersistenceStatus();
+        std::cout << "Telemetry persistence\n";
+        std::cout << "  Enabled            : " << (status.enabled ? "true" : "false") << "\n";
+        std::cout << "  Queued             : " << status.queuedCount << "\n";
+        std::cout << "  Persisted          : " << status.persistedCount << "\n";
+        std::cout << "  Dropped            : " << status.droppedCount << "\n";
+        std::cout << "  Current file index : " << status.currentFileIndex << "\n";
+
+        if (!status.files.empty()) {
+            std::cout << "  Files\n";
+            for (const auto& file : status.files) {
+                std::cout << "    - " << file << "\n";
+            }
+        }
+
+        return 0;
+    }
+
+    const std::string statusFilter = ReadOption(command, "status");
+    const std::string adapterFilter = ReadOption(command, "adapter");
+    const std::size_t limit = ReadSizeOption(command, "limit", 20U, 500U);
+
+    if (!statusFilter.empty() || !adapterFilter.empty()) {
+        const auto traces = telemetry_.QueryExecutions(limit, statusFilter, adapterFilter);
+
+        if (HasOption(command, "json")) {
+            std::cout << "[";
+            for (std::size_t index = 0; index < traces.size(); ++index) {
+                if (index > 0) {
+                    std::cout << ",";
+                }
+                std::cout << telemetry_.SerializeTraceJson(traces[index].traceId);
+            }
+            std::cout << "]\n";
+            return 0;
+        }
+
+        std::cout << std::left << std::setw(40) << "TRACE_ID"
+                  << std::setw(12) << "INTENT"
+                  << std::setw(16) << "ADAPTER"
+                  << std::setw(10) << "STATUS"
+                  << "DURATION_MS\n";
+        std::cout << std::string(96, '-') << "\n";
+
+        for (const auto& trace : traces) {
+            std::cout << std::left << std::setw(40) << trace.traceId
+                      << std::setw(12) << trace.intent
+                      << std::setw(16) << trace.adapter
+                      << std::setw(10) << trace.status
+                      << trace.durationMs
+                      << "\n";
+        }
+
+        std::cout << "\nFiltered traces: " << traces.size() << "\n";
+        return 0;
+    }
+
     if (HasOption(command, "json")) {
         std::cout << telemetry_.SerializeSnapshotJson() << "\n";
         return 0;
@@ -452,7 +540,8 @@ int CliApp::HandleTrace(const ParsedCommand& command) {
         return trace.has_value() ? 0 : 1;
     }
 
-    const auto traces = telemetry_.RecentExecutions(20);
+    const std::size_t limit = ReadSizeOption(command, "limit", 20U, 500U);
+    const auto traces = telemetry_.RecentExecutions(limit);
     if (traces.empty()) {
         std::cout << "No traces recorded yet.\n";
         return 0;
