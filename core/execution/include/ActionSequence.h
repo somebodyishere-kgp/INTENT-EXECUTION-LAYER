@@ -2,6 +2,7 @@
 
 #include <chrono>
 #include <cstddef>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -16,6 +17,9 @@ struct ActionStep {
     std::string label;
     int delayAfterMs{0};
     bool required{true};
+    std::size_t repeatCount{1};
+    std::wstring ifTargetVisible;
+    std::optional<Intent> elseIntent;
 };
 
 struct ActionSequence {

@@ -16,6 +16,7 @@
 #include "ExecutionEngine.h"
 #include "Intent.h"
 #include "IntentRegistry.h"
+#include "DecisionInterfaces.h"
 #include "Telemetry.h"
 
 namespace iee {
@@ -30,6 +31,7 @@ struct ControlRuntimeConfig {
     int targetFrameMs{16};
     std::uint64_t maxFrames{0};
     int observationIntervalMs{8};
+    int decisionBudgetMs{2};
 };
 
 struct ControlRuntimeSnapshot {
@@ -53,6 +55,11 @@ struct ControlRuntimeSnapshot {
     std::uint64_t observationSamples{0};
     std::int64_t lastObservationCaptureMs{0};
     std::string observationAdapter;
+    std::uint64_t decisionIntentsProduced{0};
+    std::uint64_t decisionTimeouts{0};
+    std::uint64_t feedbackSamples{0};
+    std::uint64_t feedbackMismatches{0};
+    std::uint64_t feedbackCorrections{0};
 };
 
 struct ControlRuntimeSummary {
@@ -82,6 +89,10 @@ public:
 
     bool EnqueueIntent(const Intent& intent, ControlPriority priority);
     bool LatestEnvironmentState(EnvironmentState* state) const;
+    void SetDecisionProvider(std::shared_ptr<DecisionProvider> provider, int budgetMs = 2);
+    void SetPredictor(std::shared_ptr<Predictor> predictor);
+    bool Predict(const Intent& intent, StateSnapshot* predictedState, std::string* diagnostics = nullptr) const;
+    std::vector<Feedback> RecentFeedback(std::size_t limit = 32) const;
 
     static std::string SerializeSnapshotJson(const ControlRuntimeSnapshot& snapshot);
     static std::string SerializeSummaryJson(const ControlRuntimeSummary& summary);
@@ -96,6 +107,8 @@ private:
 
     void RunLoop();
     void HandleEvent(const Event& event);
+    void SubmitDecisionState(const EnvironmentState& state, std::uint64_t frame);
+    void DecisionLoop();
     bool PopIntentLocked(
         Intent* intent,
         ControlPriority* priority,
@@ -148,12 +161,34 @@ private:
     std::int64_t lastObservationCaptureMs_{0};
     std::string observationAdapterName_;
 
+    mutable std::mutex predictorMutex_;
+    std::shared_ptr<Predictor> predictor_;
+
+    mutable std::mutex decisionMutex_;
+    std::condition_variable decisionCv_;
+    std::thread decisionWorker_;
+    bool decisionStopRequested_{false};
+    bool decisionStatePending_{false};
+    EnvironmentState decisionPendingState_;
+    std::uint64_t decisionPendingFrame_{0};
+    std::shared_ptr<DecisionProvider> decisionProvider_;
+    std::chrono::milliseconds decisionBudget_{2};
+
+    std::deque<Feedback> feedbackHistory_;
+    std::uint64_t decisionIntentsProduced_{0};
+    std::uint64_t decisionTimeouts_{0};
+    std::uint64_t feedbackSamples_{0};
+    std::uint64_t feedbackMismatches_{0};
+    std::uint64_t feedbackCorrections_{0};
+
     EventBus::SubscriptionId uiChangedSubscriptionId_{0};
     EventBus::SubscriptionId fileChangedSubscriptionId_{0};
     EventBus::SubscriptionId errorSubscriptionId_{0};
     EventBus::SubscriptionId ambiguitySubscriptionId_{0};
 
     static constexpr std::size_t kMaxLatencySamples = 4096;
+    static constexpr std::size_t kMaxFeedbackHistory = 512;
+    static constexpr std::size_t kMaxDecisionIntentsPerPass = 8;
 };
 
 }  // namespace iee

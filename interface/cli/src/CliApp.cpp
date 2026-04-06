@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <charconv>
 #include <cstdint>
+#include <cstdlib>
 #include <iomanip>
 #include <iostream>
 #include <limits>
@@ -87,6 +88,26 @@ std::size_t ReadSizeOption(
     }
 
     return bounded;
+}
+
+double ReadDoubleOption(
+    const ParsedCommand& command,
+    const std::string& key,
+    double defaultValue,
+    double minValue,
+    double maxValue) {
+    const std::string value = ReadOption(command, key);
+    if (value.empty()) {
+        return defaultValue;
+    }
+
+    char* end = nullptr;
+    const double parsed = std::strtod(value.c_str(), &end);
+    if (end == value.c_str() || end == nullptr || *end != '\0') {
+        return defaultValue;
+    }
+
+    return std::clamp(parsed, minValue, maxValue);
 }
 
 std::uint16_t ReadPort(const ParsedCommand& command, std::uint16_t defaultValue) {
@@ -199,6 +220,10 @@ int CliApp::Run(int argc, char* argv[]) {
 
     if (command.command == "latency") {
         return HandleLatency(command);
+    }
+
+    if (command.command == "perf") {
+        return HandlePerf(command);
     }
 
     CliParser::PrintHelp();
@@ -423,8 +448,9 @@ int CliApp::HandleApi(const ParsedCommand& command) {
 
     std::cout << "Starting IEE local API on 127.0.0.1:" << port << "\n";
     std::cout << "Routes: GET /health, GET /intents, GET /capabilities, GET /control/status, "
-                 "GET /telemetry/persistence, GET /stream/state, POST /execute, POST /explain, "
-                 "POST /control/start, POST /control/stop, POST /stream/control\n";
+                 "GET /telemetry/persistence, GET /stream/state, GET /stream/live, GET /perf, "
+                 "POST /execute, POST /predict, POST /explain, POST /control/start, POST /control/stop, "
+                 "POST /stream/control\n";
     if (singleRequest) {
         std::cout << "Mode: single request\n";
     }
@@ -614,6 +640,30 @@ int CliApp::HandleLatency(const ParsedCommand& command) {
     }
 
     return 0;
+}
+
+int CliApp::HandlePerf(const ParsedCommand& command) {
+    const std::size_t limit = ReadSizeOption(command, "limit", 200U, 4096U);
+    const double targetBudgetMs = ReadDoubleOption(command, "target_ms", 16.0, 1.0, 1000.0);
+
+    if (HasOption(command, "json")) {
+        std::cout << telemetry_.SerializePerformanceContractJson(targetBudgetMs, limit) << "\n";
+        return 0;
+    }
+
+    const PerformanceContractSnapshot contract = telemetry_.PerformanceContract(targetBudgetMs, limit);
+
+    std::cout << "Performance contract\n";
+    std::cout << "  Samples          : " << contract.sampleCount << "\n";
+    std::cout << "  Target budget ms : " << std::fixed << std::setprecision(3) << contract.targetBudgetMs << "\n";
+    std::cout << "  p50 total ms     : " << std::fixed << std::setprecision(3) << contract.p50Ms << "\n";
+    std::cout << "  p95 total ms     : " << std::fixed << std::setprecision(3) << contract.p95Ms << "\n";
+    std::cout << "  max total ms     : " << std::fixed << std::setprecision(3) << contract.maxMs << "\n";
+    std::cout << "  jitter ms        : " << std::fixed << std::setprecision(3) << contract.jitterMs << "\n";
+    std::cout << "  drift ms         : " << std::fixed << std::setprecision(3) << contract.driftMs << "\n";
+    std::cout << "  within budget    : " << (contract.withinBudget ? "true" : "false") << "\n";
+
+    return contract.withinBudget ? 0 : 2;
 }
 
 }  // namespace iee

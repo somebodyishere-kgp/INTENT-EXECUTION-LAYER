@@ -13,6 +13,7 @@
 #include <sstream>
 #include <string_view>
 #include <thread>
+#include <unordered_map>
 
 #include "ActionSequence.h"
 
@@ -511,6 +512,21 @@ bool BuildStreamIntent(
         streamIntent.constraints.maxRetries = retries;
     }
 
+    int delayMs = 0;
+    if (ParseInt32(ReadPayloadValue(payload, {"delay_ms", "delayMs"}), &delayMs) && delayMs >= 0) {
+        streamIntent.params.values["delay_ms"] = std::to_wstring(delayMs);
+    }
+
+    int holdMs = 0;
+    if (ParseInt32(ReadPayloadValue(payload, {"hold_ms", "holdMs"}), &holdMs) && holdMs >= 0) {
+        streamIntent.params.values["hold_ms"] = std::to_wstring(holdMs);
+    }
+
+    int sequenceMs = 0;
+    if (ParseInt32(ReadPayloadValue(payload, {"sequence_ms", "sequenceMs"}), &sequenceMs) && sequenceMs >= 0) {
+        streamIntent.params.values["sequence_ms"] = std::to_wstring(sequenceMs);
+    }
+
     *intent = std::move(streamIntent);
     return true;
 }
@@ -525,14 +541,158 @@ std::size_t ReadRepeatCount(const std::map<std::string, std::string>& payload) {
     return static_cast<std::size_t>(bounded);
 }
 
+std::unordered_map<std::string, std::string> ParseQueryString(const std::string& query) {
+    std::unordered_map<std::string, std::string> result;
+    if (query.empty()) {
+        return result;
+    }
+
+    std::size_t start = 0;
+    while (start < query.size()) {
+        const std::size_t end = query.find('&', start);
+        const std::string token = query.substr(start, end == std::string::npos ? std::string::npos : end - start);
+
+        const std::size_t separator = token.find('=');
+        if (separator != std::string::npos && separator > 0) {
+            result[token.substr(0, separator)] = token.substr(separator + 1U);
+        }
+
+        if (end == std::string::npos) {
+            break;
+        }
+
+        start = end + 1U;
+    }
+
+    return result;
+}
+
+bool ParseRequestLine(const std::string& request, std::string* method, std::string* path) {
+    if (method == nullptr || path == nullptr) {
+        return false;
+    }
+
+    const std::size_t firstSpace = request.find(' ');
+    const std::size_t secondSpace = firstSpace == std::string::npos ? std::string::npos : request.find(' ', firstSpace + 1U);
+    if (firstSpace == std::string::npos || secondSpace == std::string::npos) {
+        return false;
+    }
+
+    *method = request.substr(0, firstSpace);
+    *path = request.substr(firstSpace + 1U, secondSpace - firstSpace - 1U);
+    return true;
+}
+
+std::size_t ReadQuerySize(
+    const std::unordered_map<std::string, std::string>& query,
+    const std::string& key,
+    std::size_t defaultValue,
+    std::size_t minValue,
+    std::size_t maxValue) {
+    const auto it = query.find(key);
+    if (it == query.end()) {
+        return defaultValue;
+    }
+
+    std::uint64_t parsed = 0;
+    if (!ParseUint64(it->second, &parsed)) {
+        return defaultValue;
+    }
+
+    const std::size_t clamped = static_cast<std::size_t>(std::clamp<std::uint64_t>(parsed, minValue, maxValue));
+    return clamped;
+}
+
+int ReadQueryInt(
+    const std::unordered_map<std::string, std::string>& query,
+    const std::string& key,
+    int defaultValue,
+    int minValue,
+    int maxValue) {
+    const auto it = query.find(key);
+    if (it == query.end()) {
+        return defaultValue;
+    }
+
+    int parsed = 0;
+    if (!ParseInt32(it->second, &parsed)) {
+        return defaultValue;
+    }
+
+    return std::clamp(parsed, minValue, maxValue);
+}
+
+bool SendAll(SOCKET socket, const std::string& payload) {
+    std::size_t sent = 0;
+    while (sent < payload.size()) {
+        const int written = send(
+            socket,
+            payload.data() + static_cast<std::ptrdiff_t>(sent),
+            static_cast<int>(payload.size() - sent),
+            0);
+        if (written <= 0) {
+            return false;
+        }
+        sent += static_cast<std::size_t>(written);
+    }
+    return true;
+}
+
+class HeuristicPredictor final : public Predictor {
+public:
+    std::string Name() const override {
+        return "heuristic";
+    }
+
+    StateSnapshot Predict(const Intent& intent, const StateSnapshot& current, std::string* diagnostics) override {
+        StateSnapshot predicted = current;
+        predicted.sequence = current.sequence + 1;
+        predicted.sourceSnapshotVersion = current.sourceSnapshotVersion == 0
+            ? current.sequence
+            : current.sourceSnapshotVersion;
+        predicted.capturedAt = std::chrono::system_clock::now();
+        predicted.simulated = true;
+
+        if (intent.action == IntentAction::Create) {
+            predicted.perception.occupancyRatio = std::clamp(predicted.perception.occupancyRatio + 0.01, 0.0, 1.0);
+        } else if (intent.action == IntentAction::Delete) {
+            predicted.perception.occupancyRatio = std::clamp(predicted.perception.occupancyRatio - 0.01, 0.0, 1.0);
+        }
+
+        if (diagnostics != nullptr) {
+            *diagnostics = "heuristic predictor used";
+        }
+
+        return predicted;
+    }
+};
+
 }  // namespace
 
 IntentApiServer::IntentApiServer(IntentRegistry& registry, ExecutionEngine& executionEngine, Telemetry& telemetry)
     : registry_(registry),
       executionEngine_(executionEngine),
       telemetry_(telemetry),
-    streamEnvironmentAdapter_(std::make_shared<RegistryEnvironmentAdapter>(registry_)),
+      streamEnvironmentAdapter_(std::make_shared<RegistryEnvironmentAdapter>(registry_)),
+      predictor_(std::make_shared<HeuristicPredictor>()),
       startedAt_(std::chrono::steady_clock::now()) {}
+
+void IntentApiServer::SetPredictor(std::shared_ptr<Predictor> predictor) {
+    std::shared_ptr<Predictor> activePredictor;
+    {
+        std::lock_guard<std::mutex> lock(predictorMutex_);
+        if (predictor == nullptr) {
+            predictor_ = std::make_shared<HeuristicPredictor>();
+        } else {
+            predictor_ = std::move(predictor);
+        }
+        activePredictor = predictor_;
+    }
+
+    if (controlRuntime_) {
+        controlRuntime_->SetPredictor(activePredictor);
+    }
+}
 
 int IntentApiServer::Run(std::uint16_t port, bool singleRequest, std::size_t maxRequests) {
     WSADATA wsaData{};
@@ -637,13 +797,76 @@ int IntentApiServer::Run(std::uint16_t port, bool singleRequest, std::size_t max
         std::string response;
         if (requestError) {
             response = std::move(errorResponse);
-        } else if (request.empty()) {
-            response = BuildErrorResponse(400, "Bad Request", "empty_request", "Request is empty");
-        } else {
-            response = HandleRequest(request);
+            SendAll(client, response);
+            closesocket(client);
+            return;
         }
 
-        send(client, response.c_str(), static_cast<int>(response.size()), 0);
+        if (request.empty()) {
+            response = BuildErrorResponse(400, "Bad Request", "empty_request", "Request is empty");
+            SendAll(client, response);
+            closesocket(client);
+            return;
+        }
+
+        std::string method;
+        std::string path;
+        const bool parsedLine = ParseRequestLine(request, &method, &path);
+        if (parsedLine && method == "GET" && path.rfind("/stream/live", 0) == 0) {
+            const std::size_t queryPos = path.find('?');
+            const std::unordered_map<std::string, std::string> query = ParseQueryString(
+                queryPos == std::string::npos ? std::string() : path.substr(queryPos + 1U));
+
+            const std::size_t eventLimit = ReadQuerySize(query, "events", 20U, 1U, 200U);
+            const int intervalMs = ReadQueryInt(query, "interval_ms", 200, 25, 2000);
+
+            const std::string headers =
+                "HTTP/1.1 200 OK\r\n"
+                "Content-Type: text/event-stream\r\n"
+                "Cache-Control: no-cache\r\n"
+                "Connection: close\r\n"
+                "X-Accel-Buffering: no\r\n\r\n";
+
+            if (!SendAll(client, headers)) {
+                closesocket(client);
+                return;
+            }
+
+            for (std::size_t eventIndex = 0; eventIndex < eventLimit; ++eventIndex) {
+                const TelemetrySnapshot telemetrySnapshot = telemetry_.Snapshot();
+                const bool runtimeActive = controlRuntime_ != nullptr && controlRuntime_->Status().active;
+                const ControlRuntimeSnapshot runtimeStatus = runtimeActive
+                    ? controlRuntime_->Status()
+                    : ControlRuntimeSnapshot{};
+
+                std::ostringstream payload;
+                payload << "{";
+                payload << "\"event\":" << eventIndex << ",";
+                payload << "\"timestamp_ms\":" << EpochMs(std::chrono::system_clock::now()) << ",";
+                payload << "\"runtime_active\":" << (runtimeActive ? "true" : "false") << ",";
+                payload << "\"total_executions\":" << telemetrySnapshot.totalExecutions << ",";
+                payload << "\"success_rate\":" << telemetrySnapshot.successRate << ",";
+                payload << "\"average_latency_ms\":" << telemetrySnapshot.averageLatencyMs;
+                if (runtimeActive) {
+                    payload << ",\"control\":" << ControlRuntime::SerializeSnapshotJson(runtimeStatus);
+                }
+                payload << "}";
+
+                const std::string event = "event: runtime\\n" +
+                    std::string("data: ") + payload.str() + "\\n\\n";
+                if (!SendAll(client, event)) {
+                    break;
+                }
+
+                std::this_thread::sleep_for(std::chrono::milliseconds(intervalMs));
+            }
+
+            closesocket(client);
+            return;
+        }
+
+        response = HandleRequest(request);
+        SendAll(client, response);
         closesocket(client);
     };
 
@@ -689,30 +912,39 @@ std::string IntentApiServer::HandleRequestForTesting(const std::string& request)
 
 ControlRuntime& IntentApiServer::EnsureControlRuntime() {
     if (!controlRuntime_) {
+        std::shared_ptr<Predictor> activePredictor;
+        {
+            std::lock_guard<std::mutex> lock(predictorMutex_);
+            activePredictor = predictor_;
+        }
+
         controlRuntime_ = std::make_unique<ControlRuntime>(
             registry_,
             executionEngine_,
             executionEngine_.Events(),
             telemetry_,
             streamEnvironmentAdapter_);
+        controlRuntime_->SetPredictor(activePredictor);
     }
 
     return *controlRuntime_;
 }
 
 std::string IntentApiServer::HandleRequest(const std::string& request) {
-    const std::size_t firstSpace = request.find(' ');
-    const std::size_t secondSpace = firstSpace == std::string::npos ? std::string::npos : request.find(' ', firstSpace + 1U);
-    if (firstSpace == std::string::npos || secondSpace == std::string::npos) {
+    std::string method;
+    std::string pathWithQuery;
+    if (!ParseRequestLine(request, &method, &pathWithQuery)) {
         return BuildErrorResponse(400, "Bad Request", "malformed_request_line", "Malformed request line");
     }
 
-    const std::string method = request.substr(0, firstSpace);
-    std::string path = request.substr(firstSpace + 1U, secondSpace - firstSpace - 1U);
+    std::string path = pathWithQuery;
+    std::string queryString;
     const std::size_t queryPos = path.find('?');
     if (queryPos != std::string::npos) {
+        queryString = path.substr(queryPos + 1U);
         path = path.substr(0, queryPos);
     }
+    const std::unordered_map<std::string, std::string> query = ParseQueryString(queryString);
 
     const std::size_t bodyPos = request.find("\r\n\r\n");
     const std::string body = bodyPos == std::string::npos ? std::string() : request.substr(bodyPos + 4U);
@@ -848,6 +1080,49 @@ std::string IntentApiServer::HandleRequest(const std::string& request) {
         return BuildResponse(200, "OK", json.str());
     }
 
+    if (method == "GET" && path == "/stream/live") {
+        const std::size_t events = ReadQuerySize(query, "events", 20U, 1U, 200U);
+        const int intervalMs = ReadQueryInt(query, "interval_ms", 200, 25, 2000);
+
+        std::ostringstream json;
+        json << "{";
+        json << "\"stream\":\"live\",";
+        json << "\"transport\":\"sse\",";
+        json << "\"events\":" << events << ",";
+        json << "\"interval_ms\":" << intervalMs;
+        json << "}";
+        return BuildResponse(200, "OK", json.str());
+    }
+
+    if (method == "GET" && path == "/perf") {
+        double targetBudgetMs = 16.0;
+        if (controlRuntime_ != nullptr && controlRuntime_->Status().active) {
+            targetBudgetMs = static_cast<double>(std::max<std::int64_t>(1LL, controlRuntime_->Status().targetFrameMs));
+        }
+
+        const auto targetIt = query.find("target_ms");
+        if (targetIt != query.end()) {
+            int parsedTarget = 0;
+            if (ParseInt32(targetIt->second, &parsedTarget) && parsedTarget > 0) {
+                targetBudgetMs = static_cast<double>(parsedTarget);
+            }
+        }
+
+        const std::size_t limit = ReadQuerySize(query, "limit", 200U, 1U, 4096U);
+        const bool runtimeActive = controlRuntime_ != nullptr && controlRuntime_->Status().active;
+
+        std::ostringstream json;
+        json << "{";
+        json << "\"runtime_active\":" << (runtimeActive ? "true" : "false") << ",";
+        json << "\"contract\":" << telemetry_.SerializePerformanceContractJson(targetBudgetMs, limit);
+        if (runtimeActive) {
+            json << ",\"control_status\":" << ControlRuntime::SerializeSnapshotJson(controlRuntime_->Status());
+        }
+        json << "}";
+
+        return BuildResponse(200, "OK", json.str());
+    }
+
     if (method == "POST" && path == "/control/start") {
         std::map<std::string, std::string> payload;
         if (!body.empty()) {
@@ -878,6 +1153,13 @@ std::string IntentApiServer::HandleRequest(const std::string& request) {
                 ReadPayloadValue(payload, {"observationIntervalMs", "observation_interval_ms"}),
                 &observationIntervalMs)) {
             config.observationIntervalMs = observationIntervalMs;
+        }
+
+        int decisionBudgetMs = 0;
+        if (ParseInt32(
+                ReadPayloadValue(payload, {"decisionBudgetMs", "decision_budget_ms"}),
+                &decisionBudgetMs)) {
+            config.decisionBudgetMs = decisionBudgetMs;
         }
 
         ControlRuntime& runtime = EnsureControlRuntime();
@@ -1027,6 +1309,73 @@ std::string IntentApiServer::HandleRequest(const std::string& request) {
 
         const int statusCode = sequenceResult.success ? 200 : 500;
         return BuildResponse(statusCode, statusCode == 200 ? "OK" : "Internal Server Error", resultJson.str());
+    }
+
+    if (method == "POST" && path == "/predict") {
+        std::map<std::string, std::string> payload;
+        std::string jsonError;
+        if (!ParseFlatJsonObject(body, &payload, &jsonError)) {
+            return BuildErrorResponse(400, "Bad Request", "invalid_json", jsonError);
+        }
+
+        Intent intent;
+        std::string errorCode;
+        std::string errorMessage;
+        if (!BuildStreamIntent(payload, &intent, &errorCode, &errorMessage)) {
+            return BuildErrorResponse(400, "Bad Request", errorCode, errorMessage);
+        }
+
+        StateSnapshot current;
+        bool captured = false;
+        if (controlRuntime_ != nullptr && controlRuntime_->Status().active) {
+            captured = controlRuntime_->LatestEnvironmentState(&current);
+        }
+
+        if (!captured && streamEnvironmentAdapter_ != nullptr) {
+            std::string captureError;
+            captured = streamEnvironmentAdapter_->CaptureState(&current, &captureError);
+        }
+
+        if (!captured) {
+            return BuildErrorResponse(503, "Service Unavailable", "prediction_state_unavailable", "Unable to capture state for prediction");
+        }
+
+        std::shared_ptr<Predictor> activePredictor;
+        {
+            std::lock_guard<std::mutex> lock(predictorMutex_);
+            activePredictor = predictor_;
+        }
+
+        StateSnapshot predicted;
+        std::string diagnostics;
+        if (activePredictor != nullptr) {
+            predicted = activePredictor->Predict(intent, current, &diagnostics);
+        } else {
+            predicted = current;
+            predicted.sequence = current.sequence + 1;
+            predicted.capturedAt = std::chrono::system_clock::now();
+            predicted.simulated = true;
+            diagnostics = "predictor not configured; passthrough used";
+        }
+
+        const FeedbackDelta delta = ComputeFeedbackDelta(current, predicted);
+
+        std::ostringstream json;
+        json << "{";
+        json << "\"predictor\":\"" << EscapeJson(activePredictor != nullptr ? activePredictor->Name() : "none") << "\",";
+        json << "\"diagnostics\":\"" << EscapeJson(diagnostics) << "\",";
+        json << "\"intent\":{\"action\":\"" << EscapeJson(ToString(intent.action)) << "\"},";
+        json << "\"before\":" << SerializeEnvironmentStateJson(current) << ",";
+        json << "\"after\":" << SerializeEnvironmentStateJson(predicted) << ",";
+        json << "\"delta\":{";
+        json << "\"signature_changed\":" << (delta.signatureChanged ? "true" : "false") << ",";
+        json << "\"focus_ratio_delta\":" << delta.focusRatioDelta << ",";
+        json << "\"occupancy_ratio_delta\":" << delta.occupancyRatioDelta << ",";
+        json << "\"capture_skew_ms\":" << delta.captureSkewMs;
+        json << "}";
+        json << "}";
+
+        return BuildResponse(200, "OK", json.str());
     }
 
     if (method == "POST" && (path == "/execute" || path == "/explain")) {

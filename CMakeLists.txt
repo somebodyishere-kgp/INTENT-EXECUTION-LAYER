@@ -22,6 +22,7 @@ add_library(iee_core
     core/execution/src/ActionSequence.cpp
     core/execution/src/Adapter.cpp
     core/execution/src/ControlRuntime.cpp
+    core/execution/src/DecisionInterfaces.cpp
     core/execution/src/EnvironmentAdapter.cpp
     core/execution/src/ExecutionEngine.cpp
     core/intent/src/Intent.cpp
@@ -128,6 +129,12 @@ add_executable(iee_test_integration_control_runtime
 target_include_directories(iee_test_integration_control_runtime PRIVATE tests)
 target_link_libraries(iee_test_integration_control_runtime PRIVATE iee_core)
 
+add_executable(iee_test_integration_closed_loop_feedback
+    tests/integration_closed_loop_feedback.cpp
+)
+target_include_directories(iee_test_integration_closed_loop_feedback PRIVATE tests)
+target_link_libraries(iee_test_integration_closed_loop_feedback PRIVATE iee_core)
+
 add_test(NAME unit_capability_extractor COMMAND iee_test_unit_capability)
 add_test(NAME unit_intent_schema COMMAND iee_test_unit_intent)
 add_test(NAME integration_execution_filesystem COMMAND iee_test_integration_execution)
@@ -139,3 +146,4 @@ add_test(NAME integration_failure_injection COMMAND iee_test_integration_failure
 add_test(NAME integration_api_hardening COMMAND iee_test_integration_api_hardening)
 add_test(NAME stress_execution_loop COMMAND iee_test_stress_execution)
 add_test(NAME integration_control_runtime COMMAND iee_test_integration_control_runtime)
+add_test(NAME integration_closed_loop_feedback COMMAND iee_test_integration_closed_loop_feedback)

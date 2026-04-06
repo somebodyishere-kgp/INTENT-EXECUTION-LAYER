@@ -1,12 +1,14 @@
 #include "Adapter.h"
 
 #include <algorithm>
+#include <charconv>
 #include <cmath>
 #include <filesystem>
 #include <fstream>
 #include <limits>
 #include <sstream>
 #include <system_error>
+#include <thread>
 
 #include "Logger.h"
 
@@ -293,6 +295,15 @@ ExecutionResult InputAdapter::Execute(const Intent& intent) {
         return result;
     }
 
+    const int configuredDelayMs = ReadTimingParamMs(intent, "delay_ms", 0, 5000);
+    const int sequenceDelayMs = ReadTimingParamMs(intent, "sequence_ms", 0, 5000);
+    const int holdMs = ReadTimingParamMs(intent, "hold_ms", 0, 2000);
+    const int effectiveDelayMs = std::max(configuredDelayMs, sequenceDelayMs);
+
+    if (effectiveDelayMs > 0) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(effectiveDelayMs));
+    }
+
     SetForegroundWindow(activeWindow);
 
     bool ok = false;
@@ -300,9 +311,9 @@ ExecutionResult InputAdapter::Execute(const Intent& intent) {
     case IntentAction::Activate:
     case IntentAction::Select:
         if (intent.target.screenCenter.x != 0 || intent.target.screenCenter.y != 0) {
-            ok = SendLeftClick(intent.target.screenCenter.x, intent.target.screenCenter.y);
+            ok = SendLeftClick(intent.target.screenCenter.x, intent.target.screenCenter.y, holdMs);
         } else {
-            ok = SendVirtualKey(VK_RETURN);
+            ok = SendVirtualKey(VK_RETURN, holdMs);
         }
         result.verified = ok;
         result.status = ok ? ExecutionStatus::PARTIAL : ExecutionStatus::FAILED;
@@ -320,10 +331,10 @@ ExecutionResult InputAdapter::Execute(const Intent& intent) {
 
         bool focused = true;
         if (intent.target.screenCenter.x != 0 || intent.target.screenCenter.y != 0) {
-            focused = SendLeftClick(intent.target.screenCenter.x, intent.target.screenCenter.y);
+            focused = SendLeftClick(intent.target.screenCenter.x, intent.target.screenCenter.y, holdMs);
         }
 
-        ok = focused && SendUnicodeText(value);
+        ok = focused && SendUnicodeText(value, holdMs);
         result.verified = ok;
         result.status = ok ? ExecutionStatus::PARTIAL : ExecutionStatus::FAILED;
         result.message = ok ? "Text input sent" : "Text input failed";
@@ -348,7 +359,37 @@ AdapterScore InputAdapter::GetScore() const {
     return score;
 }
 
-bool InputAdapter::SendUnicodeText(const std::wstring& text) {
+int InputAdapter::ReadTimingParamMs(
+    const Intent& intent,
+    std::string_view key,
+    int defaultValue,
+    int maxValue) {
+    const std::wstring raw = intent.params.Get(key);
+    if (raw.empty()) {
+        return defaultValue;
+    }
+
+    const std::string narrow = Narrow(raw);
+    if (narrow.empty()) {
+        return defaultValue;
+    }
+
+    int parsed = defaultValue;
+    const auto [ptr, error] = std::from_chars(narrow.data(), narrow.data() + narrow.size(), parsed);
+    if (error != std::errc() || ptr != narrow.data() + narrow.size()) {
+        return defaultValue;
+    }
+
+    if (parsed < 0) {
+        return 0;
+    }
+    if (parsed > maxValue) {
+        return maxValue;
+    }
+    return parsed;
+}
+
+bool InputAdapter::SendUnicodeText(const std::wstring& text, int holdMs) {
     for (const wchar_t ch : text) {
         INPUT keyDown{};
         keyDown.type = INPUT_KEYBOARD;
@@ -360,9 +401,17 @@ bool InputAdapter::SendUnicodeText(const std::wstring& text) {
         keyUp.ki.wScan = ch;
         keyUp.ki.dwFlags = KEYEVENTF_UNICODE | KEYEVENTF_KEYUP;
 
-        INPUT inputs[2] = {keyDown, keyUp};
-        const UINT sent = SendInput(2, inputs, sizeof(INPUT));
-        if (sent != 2) {
+        const UINT sentDown = SendInput(1, &keyDown, sizeof(INPUT));
+        if (sentDown != 1) {
+            return false;
+        }
+
+        if (holdMs > 0) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(holdMs));
+        }
+
+        const UINT sentUp = SendInput(1, &keyUp, sizeof(INPUT));
+        if (sentUp != 1) {
             return false;
         }
     }
@@ -370,7 +419,7 @@ bool InputAdapter::SendUnicodeText(const std::wstring& text) {
     return true;
 }
 
-bool InputAdapter::SendLeftClick(int x, int y) {
+bool InputAdapter::SendLeftClick(int x, int y, int holdMs) {
     const int screenWidth = std::max(1, GetSystemMetrics(SM_CXSCREEN) - 1);
     const int screenHeight = std::max(1, GetSystemMetrics(SM_CYSCREEN) - 1);
 
@@ -391,12 +440,21 @@ bool InputAdapter::SendLeftClick(int x, int y) {
     up.type = INPUT_MOUSE;
     up.mi.dwFlags = MOUSEEVENTF_LEFTUP;
 
-    INPUT inputs[3] = {move, down, up};
-    const UINT sent = SendInput(3, inputs, sizeof(INPUT));
-    return sent == 3;
+    const UINT sentMove = SendInput(1, &move, sizeof(INPUT));
+    const UINT sentDown = SendInput(1, &down, sizeof(INPUT));
+    if (sentMove != 1 || sentDown != 1) {
+        return false;
+    }
+
+    if (holdMs > 0) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(holdMs));
+    }
+
+    const UINT sentUp = SendInput(1, &up, sizeof(INPUT));
+    return sentUp == 1;
 }
 
-bool InputAdapter::SendVirtualKey(WORD keyCode) {
+bool InputAdapter::SendVirtualKey(WORD keyCode, int holdMs) {
     INPUT keyDown{};
     keyDown.type = INPUT_KEYBOARD;
     keyDown.ki.wVk = keyCode;
@@ -406,9 +464,17 @@ bool InputAdapter::SendVirtualKey(WORD keyCode) {
     keyUp.ki.wVk = keyCode;
     keyUp.ki.dwFlags = KEYEVENTF_KEYUP;
 
-    INPUT inputs[2] = {keyDown, keyUp};
-    const UINT sent = SendInput(2, inputs, sizeof(INPUT));
-    return sent == 2;
+    const UINT sentDown = SendInput(1, &keyDown, sizeof(INPUT));
+    if (sentDown != 1) {
+        return false;
+    }
+
+    if (holdMs > 0) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(holdMs));
+    }
+
+    const UINT sentUp = SendInput(1, &keyUp, sizeof(INPUT));
+    return sentUp == 1;
 }
 
 Intent UIAAdapter::BuildIntentFromElement(const UiElement& element, const ObserverSnapshot& snapshot, IntentAction action) const {

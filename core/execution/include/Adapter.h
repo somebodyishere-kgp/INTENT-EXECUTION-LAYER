@@ -5,6 +5,7 @@
 #include <memory>
 #include <shared_mutex>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -29,6 +30,13 @@ struct ExecutionResult {
     bool IsSuccess() const {
         return status == ExecutionStatus::SUCCESS || status == ExecutionStatus::PARTIAL;
     }
+};
+
+struct TimedIntent {
+    Intent intent;
+    int delay_ms{0};
+    int hold_ms{0};
+    int sequence_ms{0};
 };
 
 struct AdapterScore {
@@ -110,9 +118,10 @@ public:
     AdapterScore GetScore() const override;
 
 private:
-    static bool SendUnicodeText(const std::wstring& text);
-    static bool SendLeftClick(int x, int y);
-    static bool SendVirtualKey(WORD keyCode);
+    static int ReadTimingParamMs(const Intent& intent, std::string_view key, int defaultValue, int maxValue);
+    static bool SendUnicodeText(const std::wstring& text, int holdMs);
+    static bool SendLeftClick(int x, int y, int holdMs);
+    static bool SendVirtualKey(WORD keyCode, int holdMs);
 };
 
 class FileSystemAdapter : public Adapter {

@@ -94,6 +94,17 @@ struct LatencyBreakdownSnapshot {
     std::optional<LatencyBreakdownSample> latest;
 };
 
+struct PerformanceContractSnapshot {
+    std::uint64_t sampleCount{0};
+    double targetBudgetMs{0.0};
+    double p50Ms{0.0};
+    double p95Ms{0.0};
+    double maxMs{0.0};
+    double jitterMs{0.0};
+    double driftMs{0.0};
+    bool withinBudget{false};
+};
+
 class Telemetry {
 public:
     Telemetry();
@@ -122,11 +133,13 @@ public:
     TelemetrySnapshot Snapshot() const;
     TelemetryPersistenceStatus PersistenceStatus() const;
     LatencyBreakdownSnapshot LatencySnapshot(std::size_t limit = 200) const;
+    PerformanceContractSnapshot PerformanceContract(double targetBudgetMs, std::size_t limit = 200) const;
 
     std::string SerializeSnapshotJson() const;
     std::string SerializeTraceJson(const std::string& traceId) const;
     std::string SerializePersistenceJson() const;
     std::string SerializeLatencyJson(std::size_t limit = 200) const;
+    std::string SerializePerformanceContractJson(double targetBudgetMs, std::size_t limit = 200) const;
 
 private:
     struct AdapterAggregate {

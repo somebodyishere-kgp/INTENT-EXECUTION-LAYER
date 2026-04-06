@@ -1,9 +1,9 @@
-# Issues and Errors Log (v1.3 Upgrade)
+# Issues and Errors Log (v1.4 Upgrade)
 
 ## Date
 2026-04-06
 
-## Resolved During v1.3 Migration
+## Resolved During v1.4 Migration
 
 ### 1. CMake Tools configure/build orchestration failure
 - Symptom: `Build_CMakeTools` / `RunCtest_CMakeTools` failed with "Unable to configure the project" and no diagnostics.
@@ -11,23 +11,17 @@
 - Fix: switched to direct `cmake` + `ctest` command path for authoritative verification.
 - Result: full build and test validation completed successfully.
 
-### 2. MSVC type ambiguity in perception geometry math
-- Symptom: compile failure in `EnvironmentAdapter.cpp` (`std::max` overload ambiguity with `LONG` vs `int`).
-- Root cause: arithmetic on `RECT` fields (`LONG`) was fed directly into `std::max(0, ...)`.
-- Fix: normalized differences with explicit `static_cast<int>(...)` before `std::max`.
-- Result: v1.3 core modules compile cleanly.
+### 2. ControlRuntime symbol-lookup compile conflict
+- Symptom: MSVC compile error in `ControlRuntime.cpp` where `ToString(intent.action)` resolved to `ControlRuntime::ToString(ControlPriority)`.
+- Root cause: member helper name shadowed global `IntentAction` serializer.
+- Fix: explicitly qualified action serialization call (`iee::ToString(intent.action)`).
+- Result: `iee_core` compiles cleanly with v1.4 decision-loop changes.
 
-### 3. Streaming state serialization construction bug
-- Symptom: malformed JSON emission in stream-state helper during initial integration pass.
-- Root cause: malformed literal insertion while composing nested perception object.
-- Fix: corrected JSON stream composition and validated endpoint through integration test.
-- Result: `GET /stream/state` returns stable structured JSON payload.
-
-### 4. Observation pipeline test flakiness under scheduler variance
-- Symptom: `unit_observation_pipeline` intermittently failed on strict sample-count threshold.
-- Root cause: aggressive fixed expectation (`>=5`) at short wall-clock interval.
-- Fix: tightened correctness assertions while relaxing scheduler-sensitive sample-count gate.
-- Result: deterministic pass behavior while still validating pipeline capture semantics.
+### 3. SSE route behavior in test harness mode
+- Symptom: `/stream/live` requires socket push behavior, while `HandleRequestForTesting(...)` is request/response.
+- Root cause: test harness bypasses raw socket streaming loop.
+- Fix: added deterministic metadata response for `/stream/live` in `HandleRequest(...)` while preserving full SSE behavior in socket request path.
+- Result: streaming route is testable and production push path remains available.
 
 ## Current Known Risks (Non-Blocking)
 
@@ -39,9 +33,9 @@
 - Current behavior: sequence execution is deterministic and stop-on-failure capable but non-transactional.
 - Risk: long macros may leave intermediate side effects on failed step.
 
-### 3. Polling-only stream model
-- Current behavior: stream endpoints are request/response polling primitives.
-- Risk: clients needing push-based updates must poll frequently or add external fan-out.
+### 3. Bounded SSE stream session model
+- Current behavior: SSE connection emits bounded events per request (`events` cap).
+- Risk: long-lived fan-out stream scenarios still require brokered streaming infrastructure.
 
 ### 4. IDE tooling parity
 - Current behavior: VS Code CMake Tools helper path remains unavailable.
@@ -49,4 +43,4 @@
 
 ## Environment Notes
 - Command-line verification remains the authoritative path in this environment.
-- Latest validation state: build success + `11/11` test pass.
+- Latest validation state: build success + `12/12` test pass.

@@ -1,7 +1,9 @@
 #include "ControlRuntime.h"
 
 #include <algorithm>
+#include <cmath>
 #include <chrono>
+#include <exception>
 #include <sstream>
 
 namespace iee {
@@ -21,6 +23,59 @@ int ClampFrameMs(int value) {
         return 1000;
     }
     return value;
+}
+
+int ClampDecisionBudgetMs(int value) {
+    if (value < 1) {
+        return 1;
+    }
+    if (value > 200) {
+        return 200;
+    }
+    return value;
+}
+
+bool IsStateChangeExpected(IntentAction action) {
+    switch (action) {
+    case IntentAction::Activate:
+    case IntentAction::SetValue:
+    case IntentAction::Select:
+    case IntentAction::Create:
+    case IntentAction::Delete:
+    case IntentAction::Move:
+        return true;
+    case IntentAction::Unknown:
+    default:
+        return false;
+    }
+}
+
+bool IsLikelyMismatch(
+    const Intent& intent,
+    const FeedbackDelta& delta,
+    const EnvironmentState& before,
+    const EnvironmentState& after) {
+    if (!IsStateChangeExpected(intent.action)) {
+        return false;
+    }
+
+    const bool uiChanged = before.uiElements.size() != after.uiElements.size();
+    const bool fileChanged = before.fileSystemEntries.size() != after.fileSystemEntries.size();
+    const bool perceptionChanged = delta.signatureChanged ||
+        std::abs(delta.focusRatioDelta) > 0.001 ||
+        std::abs(delta.occupancyRatioDelta) > 0.001;
+
+    return !uiChanged && !fileChanged && !perceptionChanged;
+}
+
+bool ShouldScheduleCorrection(const Intent& intent) {
+    const auto retryMarkerIt = intent.params.values.find("feedback_retry");
+    if (retryMarkerIt == intent.params.values.end()) {
+        return true;
+    }
+
+    const std::wstring marker = retryMarkerIt->second;
+    return !(marker == L"1" || marker == L"true" || marker == L"yes");
 }
 
 }  // namespace
@@ -74,6 +129,8 @@ bool ControlRuntime::Start(const ControlRuntimeConfig& config, std::string* mess
 
     config_ = config;
     config_.targetFrameMs = ClampFrameMs(config_.targetFrameMs);
+    config_.decisionBudgetMs = ClampDecisionBudgetMs(config_.decisionBudgetMs);
+    decisionBudget_ = std::chrono::milliseconds(config_.decisionBudgetMs);
 
     runtimeId_ = BuildRuntimeId();
     nextSequence_ = 1;
@@ -96,14 +153,26 @@ bool ControlRuntime::Start(const ControlRuntimeConfig& config, std::string* mess
     lastObservationCaptureMs_ = 0;
     observationAdapterName_.clear();
     lastTraceId_.clear();
+    decisionIntentsProduced_ = 0;
+    decisionTimeouts_ = 0;
+    feedbackSamples_ = 0;
+    feedbackMismatches_ = 0;
+    feedbackCorrections_ = 0;
 
     highQueue_.clear();
     mediumQueue_.clear();
     lowQueue_.clear();
     cycleLatenciesMs_.clear();
+    feedbackHistory_.clear();
 
     stopRequested_ = false;
     running_ = true;
+
+    {
+        std::lock_guard<std::mutex> decisionLock(decisionMutex_);
+        decisionStopRequested_ = false;
+        decisionStatePending_ = false;
+    }
 
     if (environmentAdapter_ == nullptr) {
         environmentAdapter_ = std::make_shared<RegistryEnvironmentAdapter>(registry_);
@@ -127,6 +196,10 @@ bool ControlRuntime::Start(const ControlRuntimeConfig& config, std::string* mess
 
     observationAdapterName_ = environmentAdapter_->Name();
 
+    if (!decisionWorker_.joinable()) {
+        decisionWorker_ = std::thread(&ControlRuntime::DecisionLoop, this);
+    }
+
     worker_ = std::thread(&ControlRuntime::RunLoop, this);
 
     if (message != nullptr) {
@@ -144,8 +217,19 @@ ControlRuntimeSummary ControlRuntime::Stop() {
         wakeCv_.notify_all();
     }
 
+    {
+        std::lock_guard<std::mutex> decisionLock(decisionMutex_);
+        decisionStopRequested_ = true;
+        decisionStatePending_ = false;
+        decisionCv_.notify_all();
+    }
+
     if (worker_.joinable()) {
         worker_.join();
+    }
+
+    if (decisionWorker_.joinable()) {
+        decisionWorker_.join();
     }
 
     observationPipeline_.Stop();
@@ -189,6 +273,11 @@ ControlRuntimeSnapshot ControlRuntime::Status() const {
     snapshot.observationSamples = observationSamples_;
     snapshot.lastObservationCaptureMs = lastObservationCaptureMs_;
     snapshot.observationAdapter = observationAdapterName_;
+    snapshot.decisionIntentsProduced = decisionIntentsProduced_;
+    snapshot.decisionTimeouts = decisionTimeouts_;
+    snapshot.feedbackSamples = feedbackSamples_;
+    snapshot.feedbackMismatches = feedbackMismatches_;
+    snapshot.feedbackCorrections = feedbackCorrections_;
     return snapshot;
 }
 
@@ -241,6 +330,77 @@ bool ControlRuntime::LatestEnvironmentState(EnvironmentState* state) const {
     return true;
 }
 
+void ControlRuntime::SetDecisionProvider(std::shared_ptr<DecisionProvider> provider, int budgetMs) {
+    {
+        std::lock_guard<std::mutex> lock(decisionMutex_);
+        decisionProvider_ = std::move(provider);
+        decisionBudget_ = std::chrono::milliseconds(ClampDecisionBudgetMs(budgetMs));
+        decisionStatePending_ = false;
+    }
+
+    decisionCv_.notify_all();
+}
+
+void ControlRuntime::SetPredictor(std::shared_ptr<Predictor> predictor) {
+    std::lock_guard<std::mutex> lock(predictorMutex_);
+    predictor_ = std::move(predictor);
+}
+
+bool ControlRuntime::Predict(const Intent& intent, StateSnapshot* predictedState, std::string* diagnostics) const {
+    if (predictedState == nullptr) {
+        if (diagnostics != nullptr) {
+            *diagnostics = "prediction output is null";
+        }
+        return false;
+    }
+
+    StateSnapshot current;
+    if (!LatestEnvironmentState(&current)) {
+        if (diagnostics != nullptr) {
+            *diagnostics = "environment state unavailable";
+        }
+        return false;
+    }
+
+    std::shared_ptr<Predictor> predictor;
+    {
+        std::lock_guard<std::mutex> lock(predictorMutex_);
+        predictor = predictor_;
+    }
+
+    if (predictor != nullptr) {
+        *predictedState = predictor->Predict(intent, current, diagnostics);
+        return true;
+    }
+
+    *predictedState = current;
+    predictedState->sequence = current.sequence + 1;
+    predictedState->sourceSnapshotVersion = current.sourceSnapshotVersion;
+    predictedState->capturedAt = std::chrono::system_clock::now();
+    predictedState->simulated = true;
+    predictedState->valid = current.valid;
+
+    if (diagnostics != nullptr) {
+        *diagnostics = "predictor_not_set; heuristic passthrough used";
+    }
+
+    return true;
+}
+
+std::vector<Feedback> ControlRuntime::RecentFeedback(std::size_t limit) const {
+    std::lock_guard<std::mutex> lock(mutex_);
+
+    const std::size_t cappedLimit = std::max<std::size_t>(1U, limit);
+    const std::size_t start = feedbackHistory_.size() > cappedLimit ? feedbackHistory_.size() - cappedLimit : 0U;
+
+    std::vector<Feedback> result;
+    result.reserve(feedbackHistory_.size() - start);
+    for (std::size_t index = start; index < feedbackHistory_.size(); ++index) {
+        result.push_back(feedbackHistory_[index]);
+    }
+    return result;
+}
+
 void ControlRuntime::HandleEvent(const Event& event) {
     std::lock_guard<std::mutex> lock(mutex_);
 
@@ -269,6 +429,120 @@ void ControlRuntime::HandleEvent(const Event& event) {
     }
 
     wakeCv_.notify_all();
+}
+
+void ControlRuntime::SubmitDecisionState(const EnvironmentState& state, std::uint64_t frame) {
+    {
+        std::lock_guard<std::mutex> lock(decisionMutex_);
+        if (decisionStopRequested_ || decisionProvider_ == nullptr) {
+            return;
+        }
+
+        decisionPendingState_ = state;
+        decisionPendingFrame_ = frame;
+        decisionStatePending_ = true;
+    }
+
+    decisionCv_.notify_one();
+}
+
+void ControlRuntime::DecisionLoop() {
+    while (true) {
+        std::shared_ptr<DecisionProvider> provider;
+        EnvironmentState state;
+        std::uint64_t frame = 0;
+        std::chrono::milliseconds budget(2);
+
+        {
+            std::unique_lock<std::mutex> lock(decisionMutex_);
+            decisionCv_.wait(lock, [this]() {
+                return decisionStopRequested_ || (decisionStatePending_ && decisionProvider_ != nullptr);
+            });
+
+            if (decisionStopRequested_) {
+                break;
+            }
+
+            provider = decisionProvider_;
+            state = decisionPendingState_;
+            frame = decisionPendingFrame_;
+            budget = decisionBudget_;
+            decisionStatePending_ = false;
+        }
+
+        if (provider == nullptr) {
+            continue;
+        }
+
+        std::string diagnostics;
+        std::vector<Intent> proposed;
+
+        const auto started = std::chrono::steady_clock::now();
+        try {
+            proposed = provider->Decide(state, budget, &diagnostics);
+        } catch (const std::exception& ex) {
+            diagnostics = ex.what();
+            proposed.clear();
+        } catch (...) {
+            diagnostics = "decision provider failed with unknown exception";
+            proposed.clear();
+        }
+        const auto finished = std::chrono::steady_clock::now();
+
+        const auto elapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(finished - started);
+        const bool timedOut = budget.count() > 0 && elapsedMs > budget;
+
+        std::size_t accepted = 0;
+        for (Intent& intent : proposed) {
+            if (accepted >= kMaxDecisionIntentsPerPass) {
+                break;
+            }
+
+            if (intent.action == IntentAction::Unknown) {
+                continue;
+            }
+
+            if (intent.name.empty()) {
+                intent.name = iee::ToString(intent.action);
+            }
+            if (intent.source.empty()) {
+                intent.source = provider->Name();
+            }
+
+            intent.context.controlFrame = frame;
+            if (intent.context.snapshotVersion == 0) {
+                intent.context.snapshotVersion = state.sourceSnapshotVersion == 0
+                    ? state.sequence
+                    : state.sourceSnapshotVersion;
+            }
+            if (intent.context.snapshotTicks == 0) {
+                intent.context.snapshotTicks = state.sequence;
+            }
+            if (intent.context.windowTitle.empty()) {
+                intent.context.windowTitle = state.activeWindowTitle;
+            }
+            if (intent.context.application.empty()) {
+                intent.context.application = state.activeProcessPath;
+            }
+            intent.context.cursor = state.cursorPosition;
+
+            if (EnqueueIntent(intent, ControlPriority::Low)) {
+                ++accepted;
+            }
+        }
+
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            decisionIntentsProduced_ += accepted;
+            if (timedOut) {
+                ++decisionTimeouts_;
+            }
+        }
+
+        if (!diagnostics.empty()) {
+            telemetry_.LogFailure("decision-frame-" + std::to_string(frame), "DecisionProvider", diagnostics);
+        }
+    }
 }
 
 bool ControlRuntime::PopIntentLocked(
@@ -422,6 +696,10 @@ void ControlRuntime::RunLoop() {
             }
         }
 
+        if (hasSynchronizedState) {
+            SubmitDecisionState(synchronizedState, currentFrame);
+        }
+
         Intent intent;
         ControlPriority priority{ControlPriority::Low};
         bool hasIntent = false;
@@ -496,9 +774,59 @@ void ControlRuntime::RunLoop() {
                 breakdown.timestamp = std::chrono::system_clock::now();
                 telemetry_.LogLatencyBreakdown(breakdown);
 
-                std::lock_guard<std::mutex> lock(mutex_);
-                ++intentsExecuted_;
-                lastTraceId_ = result.traceId;
+                EnvironmentState afterState;
+                bool hasAfterState = false;
+                if (hasSynchronizedState) {
+                    hasAfterState = observationPipeline_.Latest(&afterState);
+                    if (!hasAfterState) {
+                        const ObserverSnapshot fallbackSnapshot = registry_.LastSnapshot();
+                        if (fallbackSnapshot.valid) {
+                            afterState = EnvironmentStateFromSnapshot(fallbackSnapshot, false);
+                            afterState.perception = LightweightPerception::Analyze(afterState);
+                            hasAfterState = true;
+                        }
+                    }
+                }
+
+                bool mismatch = false;
+                if (hasSynchronizedState && hasAfterState) {
+                    Feedback feedback;
+                    feedback.intent = intent;
+                    feedback.status = result.status;
+                    feedback.before = synchronizedState;
+                    feedback.after = afterState;
+                    feedback.delta = ComputeFeedbackDelta(synchronizedState, afterState);
+                    feedback.traceId = result.traceId;
+                    feedback.frame = currentFrame;
+                    feedback.timestamp = std::chrono::system_clock::now();
+                    feedback.mismatch = result.IsSuccess() && IsLikelyMismatch(intent, feedback.delta, synchronizedState, afterState);
+                    mismatch = feedback.mismatch;
+
+                    std::lock_guard<std::mutex> lock(mutex_);
+                    feedbackHistory_.push_back(std::move(feedback));
+                    if (feedbackHistory_.size() > kMaxFeedbackHistory) {
+                        feedbackHistory_.pop_front();
+                    }
+                    ++feedbackSamples_;
+                    if (mismatch) {
+                        ++feedbackMismatches_;
+                    }
+                }
+
+                if (mismatch && result.IsSuccess() && ShouldScheduleCorrection(intent)) {
+                    Intent correctiveIntent = intent;
+                    correctiveIntent.params.values["feedback_retry"] = L"1";
+                    if (EnqueueIntent(correctiveIntent, ControlPriority::High)) {
+                        std::lock_guard<std::mutex> lock(mutex_);
+                        ++feedbackCorrections_;
+                    }
+                }
+
+                {
+                    std::lock_guard<std::mutex> lock(mutex_);
+                    ++intentsExecuted_;
+                    lastTraceId_ = result.traceId;
+                }
             } else {
                 QueuedIntent queued;
                 queued.intent = intent;
@@ -630,6 +958,15 @@ std::string ControlRuntime::SerializeSnapshotJson(const ControlRuntimeSnapshot& 
     stream << "\"latest_sequence\":" << snapshot.latestObservationSequence << ",";
     stream << "\"samples\":" << snapshot.observationSamples << ",";
     stream << "\"last_capture_ms\":" << snapshot.lastObservationCaptureMs;
+    stream << "},";
+    stream << "\"decision\":{";
+    stream << "\"produced\":" << snapshot.decisionIntentsProduced << ",";
+    stream << "\"timeouts\":" << snapshot.decisionTimeouts;
+    stream << "},";
+    stream << "\"feedback\":{";
+    stream << "\"samples\":" << snapshot.feedbackSamples << ",";
+    stream << "\"mismatches\":" << snapshot.feedbackMismatches << ",";
+    stream << "\"corrections\":" << snapshot.feedbackCorrections;
     stream << "},";
     stream << "\"last_trace_id\":\"" << EscapeJson(snapshot.lastTraceId) << "\"";
     stream << "}";

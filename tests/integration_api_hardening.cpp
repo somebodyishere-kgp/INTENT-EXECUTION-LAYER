@@ -118,6 +118,18 @@ int main() {
         }
 
         {
+            const std::string response = api.HandleRequestForTesting(BuildHttpRequest("GET", "/stream/live?events=3&interval_ms=50"));
+            AssertTrue(HasStatus(response, 200), "GET /stream/live should return 200 in test mode");
+            AssertTrue(response.find("\"transport\":\"sse\"") != std::string::npos, "Live stream response should identify SSE transport");
+        }
+
+        {
+            const std::string response = api.HandleRequestForTesting(BuildHttpRequest("GET", "/perf?target_ms=10&limit=64"));
+            AssertTrue(HasStatus(response, 200), "GET /perf should return 200");
+            AssertTrue(response.find("\"contract\"") != std::string::npos, "Perf response should include contract object");
+        }
+
+        {
             const std::string response = api.HandleRequestForTesting(BuildHttpRequest("GET", "/capabilities"));
             AssertTrue(HasStatus(response, 200), "GET /capabilities should return 200");
             AssertTrue(response.find("\"capabilities\"") != std::string::npos, "Capabilities response should include capabilities array");
@@ -162,6 +174,26 @@ int main() {
             AssertTrue(response.find("\"attempted_steps\":3") != std::string::npos, "Macro sequence should execute three steps");
             AssertTrue(!std::filesystem::exists("api_stream_macro.txt"), "Macro sequence should move/delete source file");
             AssertTrue(!std::filesystem::exists("api_stream_macro_moved.txt"), "Macro sequence should delete moved file");
+        }
+
+        {
+            const std::filesystem::path loopPath = "api_stream_macro_loop.txt";
+            const std::string body =
+                "{\"sequence\":\"loop|2|create:api_stream_macro_loop.txt;if_visible|Save|delete:api_stream_macro_loop.txt|delete:api_stream_macro_loop.txt\"}";
+            const std::string response = api.HandleRequestForTesting(BuildHttpRequest("POST", "/stream/control", body));
+            AssertTrue(HasStatus(response, 200), "Macro v2 loop/conditional sequence should return 200");
+            AssertTrue(response.find("\"attempted_steps\":3") != std::string::npos, "Macro v2 sequence should execute loop + branch steps");
+            AssertTrue(!std::filesystem::exists(loopPath), "Macro v2 else branch should delete generated file when target is not visible");
+        }
+
+        {
+            const std::string body = "{\"action\":\"create\",\"path\":\"api_predict_preview.txt\"}";
+            const std::string response = api.HandleRequestForTesting(BuildHttpRequest("POST", "/predict", body));
+            AssertTrue(HasStatus(response, 200), "POST /predict should return 200");
+            AssertTrue(response.find("\"before\"") != std::string::npos, "Predict response should include before state");
+            AssertTrue(response.find("\"after\"") != std::string::npos, "Predict response should include after state");
+            AssertTrue(response.find("\"delta\"") != std::string::npos, "Predict response should include delta object");
+            AssertTrue(!std::filesystem::exists("api_predict_preview.txt"), "Predict should not execute actions");
         }
 
         {

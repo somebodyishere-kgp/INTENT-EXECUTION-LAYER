@@ -3,6 +3,7 @@
 #include <Windows.h>
 
 #include <algorithm>
+#include <cmath>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
@@ -133,6 +134,15 @@ LatencyComponentStats BuildLatencyStats(std::vector<double> values) {
     const std::size_t index = ((values.size() - 1U) * 95U) / 100U;
     stats.p95Ms = values[index];
     return stats;
+}
+
+double PercentileValue(const std::vector<double>& sortedValues, std::size_t percentile) {
+    if (sortedValues.empty()) {
+        return 0.0;
+    }
+
+    const std::size_t index = ((sortedValues.size() - 1U) * percentile) / 100U;
+    return sortedValues[index];
 }
 
 }  // namespace
@@ -445,6 +455,49 @@ LatencyBreakdownSnapshot Telemetry::LatencySnapshot(std::size_t limit) const {
     return snapshot;
 }
 
+PerformanceContractSnapshot Telemetry::PerformanceContract(double targetBudgetMs, std::size_t limit) const {
+    PerformanceContractSnapshot snapshot;
+    snapshot.targetBudgetMs = std::max(1.0, targetBudgetMs);
+
+    std::vector<double> totals;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+
+        const std::size_t cappedLimit = std::max<std::size_t>(1U, limit);
+        const std::size_t start = latencyBreakdowns_.size() > cappedLimit ? latencyBreakdowns_.size() - cappedLimit : 0U;
+        const std::size_t count = latencyBreakdowns_.size() - start;
+
+        snapshot.sampleCount = count;
+        totals.reserve(count);
+        for (std::size_t index = start; index < latencyBreakdowns_.size(); ++index) {
+            totals.push_back(latencyBreakdowns_[index].totalMs);
+        }
+    }
+
+    if (totals.empty()) {
+        return snapshot;
+    }
+
+    std::sort(totals.begin(), totals.end());
+    snapshot.p50Ms = PercentileValue(totals, 50U);
+    snapshot.p95Ms = PercentileValue(totals, 95U);
+    snapshot.maxMs = totals.back();
+    snapshot.jitterMs = std::max(0.0, snapshot.p95Ms - snapshot.p50Ms);
+
+    double driftSum = 0.0;
+    for (double totalMs : totals) {
+        driftSum += std::abs(totalMs - snapshot.targetBudgetMs);
+    }
+    snapshot.driftMs = driftSum / static_cast<double>(totals.size());
+
+    const double maxAllowance = snapshot.targetBudgetMs * 2.0;
+    snapshot.withinBudget = snapshot.p95Ms <= snapshot.targetBudgetMs &&
+        snapshot.maxMs <= maxAllowance &&
+        snapshot.driftMs <= snapshot.targetBudgetMs;
+
+    return snapshot;
+}
+
 std::string Telemetry::SerializeSnapshotJson() const {
     const TelemetrySnapshot snapshot = Snapshot();
 
@@ -558,6 +611,23 @@ std::string Telemetry::SerializeLatencyJson(std::size_t limit) const {
         stream << "}";
     }
 
+    stream << "}";
+    return stream.str();
+}
+
+std::string Telemetry::SerializePerformanceContractJson(double targetBudgetMs, std::size_t limit) const {
+    const PerformanceContractSnapshot contract = PerformanceContract(targetBudgetMs, limit);
+
+    std::ostringstream stream;
+    stream << "{";
+    stream << "\"sample_count\":" << contract.sampleCount << ",";
+    stream << "\"target_budget_ms\":" << std::fixed << std::setprecision(3) << contract.targetBudgetMs << ",";
+    stream << "\"p50_ms\":" << std::fixed << std::setprecision(3) << contract.p50Ms << ",";
+    stream << "\"p95_ms\":" << std::fixed << std::setprecision(3) << contract.p95Ms << ",";
+    stream << "\"max_ms\":" << std::fixed << std::setprecision(3) << contract.maxMs << ",";
+    stream << "\"jitter_ms\":" << std::fixed << std::setprecision(3) << contract.jitterMs << ",";
+    stream << "\"drift_ms\":" << std::fixed << std::setprecision(3) << contract.driftMs << ",";
+    stream << "\"within_budget\":" << (contract.withinBudget ? "true" : "false");
     stream << "}";
     return stream.str();
 }

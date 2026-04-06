@@ -1,93 +1,88 @@
-# IEE v1.3 Architecture
+# IEE v1.4 Architecture
 
 ## Purpose
-IEE v1.3 evolves the runtime from control-loop execution into environment-aware real-time control. The system now maintains synchronized high-frequency environment state, computes lightweight perception primitives, composes macro actions, and exposes stream-focused state/control APIs while preserving v1.2 compatibility.
+IEE v1.4 evolves v1.3 into a deterministic closed-loop runtime. The system now adds optional decision and prediction providers, feedback-delta analysis, correction scheduling, push streaming transport, performance contracts, and Macro v2 control flow while preserving v1.3 compatibility.
 
 ## Runtime Modules
 
 ### core/observer
 - Captures active window/process/cursor context and filesystem snapshots.
-- Supplies snapshot sequence IDs that continue to anchor deterministic intent context.
+- Provides deterministic sequence IDs used across execution, feedback, and prediction surfaces.
 
-### core/execution Environment Layer (new in v1.3)
-- `EnvironmentAdapter` abstraction defines environment capture contract.
-- `EnvironmentState` is the canonical runtime environment frame:
-  - active process/window
-  - cursor
-  - UI and filesystem surfaces
-  - perception summary
-  - source snapshot provenance
-- `RegistryEnvironmentAdapter` bridges live `IntentRegistry` state into `EnvironmentState`.
-- `MockEnvironmentAdapter` provides deterministic simulation frames for tests and stress harnesses.
+### core/execution Environment + Observation Layer
+- `EnvironmentAdapter`, `EnvironmentState`, `RegistryEnvironmentAdapter`, and `MockEnvironmentAdapter` remain the canonical environment surface.
+- `ObservationPipeline` remains high-frequency and double-buffered.
 
-### core/execution Observation Pipeline (new in v1.3)
-- `ObservationPipeline` runs independent high-frequency sampling in a dedicated thread.
-- Uses double-buffered snapshots for low-contention producer/consumer exchange.
-- Exposes metrics: running state, sample count, failures, latest sequence, capture timing.
+### core/execution Control Runtime (v1.4 upgrade)
+- Continues dual synchronized lanes:
+  - observation lane: capture + perception
+  - execution lane: queued intents under bounded frame budget
+- New optional intelligence hooks:
+  - `DecisionProvider` integration through a dedicated decision worker thread
+  - bounded decision budget (`decisionBudgetMs`) to keep control loop non-blocking
+- New closed-loop feedback path:
+  - captures before/after state per execution
+  - computes `FeedbackDelta`
+  - tracks mismatch counters
+  - schedules one bounded correction retry for eligible mismatches
+- New runtime surfaces:
+  - decision counters (produced, timeout)
+  - feedback counters (samples, mismatches, corrections)
 
-### core/execution Lightweight Perception (new in v1.3)
-- `LightweightPerception` computes non-ML primitives from current UI structure:
-  - dominant interaction surface classification (`form`, `command`, `navigation`, `list`, `unknown`)
-  - focus ratio
-  - occupancy ratio
-  - deterministic UI signature
-  - active regions (3x3 grid density + focus)
-- No CV/ML dependency is introduced.
+### core/execution Decision Interfaces (new in v1.4)
+- `DecisionProvider` abstraction for external deterministic decision engines.
+- `Predictor` abstraction for state prediction hooks.
+- Shared feedback utilities:
+  - `ComputeFeedbackDelta(...)`
+  - `IsTargetVisible(...)`
 
-### core/execution Macro Composition (new in v1.3)
-- `ActionSequence` + `ActionStep` model reusable multi-step actions.
-- `MacroExecutor` executes ordered sequences against synchronized environment snapshots.
-- Supports repeated single-action expansion and compact DSL-defined macros.
+### core/execution Macro Composition (v1.4 upgrade)
+- Existing action sequence model retained.
+- Macro v2 DSL now supports:
+  - `loop|<count>|<action:args>`
+  - `if_visible|<target>|<then_action:args>|<else_action:args>`
+- Step-level options supported for timing/required/repeat behavior.
 
-### core/execution Control Runtime (v1.3 upgrade)
-- `ControlRuntime` now operates as dual synchronized pipelines:
-  - observation pipeline: high-frequency state capture
-  - execution pipeline: priority queues + budgeted dispatch
-- Runtime snapshots include observation telemetry:
-  - adapter
-  - latest observation sequence
-  - sample count
-  - last capture latency
-- Enqueue timestamps are retained to compute queue-wait latency breakdown.
+### core/execution Input Adapter (v1.4 upgrade)
+- Added `TimedIntent` parsing path.
+- Supports millisecond precision parameters:
+  - `delay_ms`
+  - `hold_ms`
+  - `sequence_ms`
+- Applies deterministic hold timing for key/mouse operations.
 
-### core/telemetry (v1.3 upgrade)
-- Existing trace persistence and adapter metrics remain intact.
-- Added latency breakdown model:
-  - observation
-  - perception
-  - queue wait
-  - execution
-  - verification
-  - total
-- Supports aggregate stats (`avg`, `p95`, `max`) and latest-sample serialization.
+### core/telemetry (v1.4 upgrade)
+- Retains trace persistence and latency breakdown tracking.
+- Adds performance contract model:
+  - `p50`, `p95`, `max`
+  - jitter and drift
+  - budget compliance boolean
 
-### interface/api (v1.3 upgrade)
-- Existing control/execute/explain endpoints retained.
-- Added streaming endpoints:
-  - `GET /stream/state` returns synchronized environment state + perception + latency aggregate
-  - `POST /stream/control` executes or queues single/macro control sequences
-- `POST /control/start` accepts observation interval tuning.
+### interface/api (v1.4 upgrade)
+- Existing endpoints retained.
+- Added:
+  - `POST /predict`
+  - `GET /perf`
+  - `GET /stream/live` (SSE push stream)
+- `POST /control/start` now accepts `decisionBudgetMs`.
 
-### interface/cli (v1.3 upgrade)
-- Existing operator commands retained.
-- Added latency profiler command:
-  - `iee latency`
-  - `iee latency --json`
+### interface/cli (v1.4 upgrade)
+- Existing commands retained.
+- Added `iee perf` and JSON output mode for performance contract visibility.
 
-## Core Flow (v1.3)
-1. Observe source system state through observer + event updates.
-2. Transform observer snapshots into canonical `EnvironmentState`.
-3. Sample environment continuously via `ObservationPipeline` (double-buffered).
-4. Compute lightweight perception primitives on each environment capture.
-5. Resolve/queue intents in control runtime execution lane.
-6. Synchronize execution context with latest environment snapshot.
-7. Execute single intent or macro sequence with budget constraints.
-8. Record trace telemetry + latency breakdown + persistence events.
-9. Serve stream/control/readout through CLI and HTTP API.
+## Core Flow (v1.4)
+1. Capture synchronized environment state through observation pipeline.
+2. Compute lightweight perception primitives.
+3. Submit latest frame to optional decision worker (non-blocking to control frame loop).
+4. Queue and execute intents under frame latency budget.
+5. Capture post-execution state and compute feedback delta.
+6. Detect mismatch and schedule bounded correction when applicable.
+7. Record telemetry traces, phase latency breakdowns, and performance-contract aggregates.
+8. Serve deterministic control and observability via CLI and HTTP API (including SSE push stream).
 
 ## Validation Baseline
 - Configure: `cmake -S . -B build`
 - Build: `cmake --build build --config Debug`
 - Tests: `ctest --test-dir build -C Debug --output-on-failure`
 
-Latest verified result: `11/11` tests passing.
+Latest verified result: `12/12` tests passing.

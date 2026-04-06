@@ -23,8 +23,9 @@ This repository now includes:
 - IEE v1.1: telemetry, reliability scoring, and hardened API baseline
 - IEE v1.2: control runtime, cache invalidation v2, persisted telemetry
 - IEE v1.3: environment-aware real-time control
+- IEE v1.4: decision + feedback + prediction layer
 
-## v1.3 Highlights
+## v1.4 Highlights
 
 - Environment abstraction:
   - `EnvironmentAdapter`
@@ -47,6 +48,24 @@ This repository now includes:
 - Streaming API:
   - `GET /stream/state`
   - `POST /stream/control`
+- Decision and prediction interfaces:
+  - `DecisionProvider` (optional, bounded, non-blocking runtime integration)
+  - `Predictor` hook + `POST /predict`
+- Closed-loop feedback:
+  - before/after environment capture
+  - deterministic feedback delta and mismatch detection
+  - bounded correction enqueue path
+- Input timing precision:
+  - `delay_ms`, `hold_ms`, `sequence_ms`
+  - key/mouse hold timing support in `InputAdapter`
+- Macro v2 control flow:
+  - `loop` steps
+  - `if_visible` conditional branch with optional else expression
+- Push stream transport:
+  - `GET /stream/live` (SSE)
+- Performance contract exposure:
+  - `GET /perf`
+  - `iee perf`
 
 ## Architecture
 
@@ -54,9 +73,12 @@ This repository now includes:
 Observer -> Intent Registry ---------> Execution Engine -> Adapter Runtime
    |              |                         ^                 |
    |              v                         |                 v
-   +------> Environment Adapter -> Observation Pipeline -> Control Runtime
-                                  |                      |
-                                  +------> Perception ---+
+  +------> Environment Adapter -> Observation Pipeline -> Control Runtime
+                       |            |         |         \
+                       |            |         |          -> Feedback + Corrections
+                       +------> Perception ---+          -> Decision Provider (optional)
+
+Predictor hook -> /predict and runtime prediction surfaces
 
 Telemetry <---------------- traces + latency breakdowns + persistence
 ```
@@ -117,6 +139,10 @@ ctest --test-dir build -C Debug --output-on-failure
 ./build/Debug/iee.exe latency
 ./build/Debug/iee.exe latency --json --limit 300
 
+# performance contract snapshot
+./build/Debug/iee.exe perf
+./build/Debug/iee.exe perf --json --target_ms 12 --limit 300
+
 # recent traces or a specific trace
 ./build/Debug/iee.exe trace
 ./build/Debug/iee.exe trace --id <trace_id>
@@ -140,7 +166,10 @@ Available routes:
 - `GET /telemetry/persistence`
 - `GET /control/status`
 - `GET /stream/state`
+- `GET /stream/live`
+- `GET /perf`
 - `POST /execute`
+- `POST /predict`
 - `POST /explain`
 - `POST /control/start`
 - `POST /control/stop`
@@ -160,6 +189,15 @@ Example stream-control macro payload:
 ```json
 {
 	"sequence": "create|macro_a.txt;move|macro_a.txt|macro_b.txt;delete|macro_b.txt"
+}
+```
+
+Example prediction payload:
+
+```json
+{
+  "action": "create",
+  "path": "notes.txt"
 }
 ```
 
@@ -187,6 +225,8 @@ Key validations include:
 - high-frequency execution latency distribution
 - observation pipeline behavior
 - stream state/control and macro execution paths
+- live SSE stream route and performance contract endpoint
+- closed-loop decision/feedback/correction behavior
 
 ## Engineering Rules
 
