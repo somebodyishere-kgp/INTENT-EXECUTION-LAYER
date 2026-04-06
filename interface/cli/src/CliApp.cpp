@@ -197,6 +197,10 @@ int CliApp::Run(int argc, char* argv[]) {
         return HandleTrace(command);
     }
 
+    if (command.command == "latency") {
+        return HandleLatency(command);
+    }
+
     CliParser::PrintHelp();
     return 1;
 }
@@ -419,7 +423,8 @@ int CliApp::HandleApi(const ParsedCommand& command) {
 
     std::cout << "Starting IEE local API on 127.0.0.1:" << port << "\n";
     std::cout << "Routes: GET /health, GET /intents, GET /capabilities, GET /control/status, "
-                 "GET /telemetry/persistence, POST /execute, POST /explain, POST /control/start, POST /control/stop\n";
+                 "GET /telemetry/persistence, GET /stream/state, POST /execute, POST /explain, "
+                 "POST /control/start, POST /control/stop, POST /stream/control\n";
     if (singleRequest) {
         std::cout << "Mode: single request\n";
     }
@@ -561,6 +566,51 @@ int CliApp::HandleTrace(const ParsedCommand& command) {
                   << std::setw(10) << trace.status
                   << trace.durationMs
                   << "\n";
+    }
+
+    return 0;
+}
+
+int CliApp::HandleLatency(const ParsedCommand& command) {
+    const std::size_t limit = ReadSizeOption(command, "limit", 200U, 4096U);
+
+    if (HasOption(command, "json")) {
+        std::cout << telemetry_.SerializeLatencyJson(limit) << "\n";
+        return 0;
+    }
+
+    const LatencyBreakdownSnapshot snapshot = telemetry_.LatencySnapshot(limit);
+    std::cout << "Latency breakdown (samples=" << snapshot.sampleCount << ")\n";
+    std::cout << std::left << std::setw(14) << "PHASE"
+              << std::setw(12) << "AVG_MS"
+              << std::setw(12) << "P95_MS"
+              << "MAX_MS\n";
+    std::cout << std::string(50, '-') << "\n";
+
+    const auto printRow = [](const char* label, const LatencyComponentStats& stats) {
+        std::cout << std::left << std::setw(14) << label
+                  << std::setw(12) << std::fixed << std::setprecision(3) << stats.averageMs
+                  << std::setw(12) << std::fixed << std::setprecision(3) << stats.p95Ms
+                  << std::fixed << std::setprecision(3) << stats.maxMs << "\n";
+    };
+
+    printRow("observation", snapshot.observation);
+    printRow("perception", snapshot.perception);
+    printRow("queue_wait", snapshot.queueWait);
+    printRow("execution", snapshot.execution);
+    printRow("verification", snapshot.verification);
+    printRow("total", snapshot.total);
+
+    if (snapshot.latest.has_value()) {
+        const LatencyBreakdownSample& latest = *snapshot.latest;
+        std::cout << "\nLatest sample\n";
+        std::cout << "  Frame           : " << latest.frame << "\n";
+        std::cout << "  Trace ID        : " << latest.traceId << "\n";
+        std::cout << "  Observation (ms): " << std::fixed << std::setprecision(3) << latest.observationMs << "\n";
+        std::cout << "  Perception  (ms): " << std::fixed << std::setprecision(3) << latest.perceptionMs << "\n";
+        std::cout << "  Queue wait  (ms): " << std::fixed << std::setprecision(3) << latest.queueWaitMs << "\n";
+        std::cout << "  Execution   (ms): " << std::fixed << std::setprecision(3) << latest.executionMs << "\n";
+        std::cout << "  Total       (ms): " << std::fixed << std::setprecision(3) << latest.totalMs << "\n";
     }
 
     return 0;

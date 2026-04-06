@@ -1,51 +1,64 @@
 # Intent Execution Engine (IEE)
 
-IEE is a native C++ system-level runtime that transforms live OS and application context into a deterministic, queryable, and executable intent layer.
+IEE is a native C++ system runtime that converts live OS/application state into a deterministic, queryable, and executable intent layer.
 
-It is built as a control-plane substrate, not a UI app or assistant.
+It is built as an execution substrate and control plane, not a UI product.
 
 ## Why IEE
 
-Modern automation stacks often break under ambiguity, latency spikes, and hidden side effects.
+Conventional automation stacks fail under ambiguity, latency spikes, stale state, and low observability.
 IEE addresses this by enforcing:
 
 - deterministic intent resolution
-- strict execution validation and verification
-- adapter-based extensibility
-- event-driven updates with bounded runtime behavior
-- real-time observability and traceability
+- verifiable adapter execution
+- event-aware real-time control
+- bounded runtime behavior
+- evidence-driven telemetry and latency profiling
 
 ## Current Runtime Stage
 
-This repository currently includes:
+This repository now includes:
 
 - IEE v1: deterministic intent execution core
-- IEE v1.1: telemetry, reliability scoring, hardened API, and real-time readiness primitives
+- IEE v1.1: telemetry, reliability scoring, and hardened API baseline
+- IEE v1.2: control runtime, cache invalidation v2, persisted telemetry
+- IEE v1.3: environment-aware real-time control
 
-## Core Capabilities
+## v1.3 Highlights
 
-- Capability graph extraction from live observer snapshots
-- Intent schema v2 (target, params, context, constraints)
-- Deterministic resolver with ambiguity handling
-- Adapter execution model:
-	- UIA adapter
-	- filesystem adapter
-	- input/control adapter foundation
-- Execution recovery:
-	- retry
-	- fallback
-	- timeout gate
-- Event model with priority levels (`HIGH`, `MEDIUM`, `LOW`)
-- Telemetry traces and adapter performance metrics
-- Local API and operator CLI
+- Environment abstraction:
+  - `EnvironmentAdapter`
+  - `EnvironmentState`
+  - live and mock adapters
+- High-frequency observation pipeline:
+  - dedicated thread
+  - double-buffer state handoff
+- Lightweight perception primitives:
+  - dominant surface classification
+  - focus/occupancy ratios
+  - UI region density/focus
+- Macro control composition:
+  - ordered `ActionSequence`
+  - compact DSL parsing
+- Dual synchronized pipelines:
+  - observation lane + execution lane
+- Latency phase profiling:
+  - observation/perception/queue/execution/verification/total
+- Streaming API:
+  - `GET /stream/state`
+  - `POST /stream/control`
 
 ## Architecture
 
 ```text
-Observer -> Capability Graph -> Intent Registry/Resolver -> Execution Engine -> Verification
-		 ^                |                  |                     |                 |
-		 |                |                  |                     |                 v
- Event Watchers ------+--------> Telemetry + Priority Events <-+---------- Adapter Runtime
+Observer -> Intent Registry ---------> Execution Engine -> Adapter Runtime
+   |              |                         ^                 |
+   |              v                         |                 v
+   +------> Environment Adapter -> Observation Pipeline -> Control Runtime
+                                  |                      |
+                                  +------> Perception ---+
+
+Telemetry <---------------- traces + latency breakdowns + persistence
 ```
 
 ## Repository Structure
@@ -96,18 +109,26 @@ ctest --test-dir build -C Debug --output-on-failure
 # explain deterministic resolution ranking
 ./build/Debug/iee.exe explain --action activate --target "Save"
 
-# telemetry summary
+# telemetry summary and persistence state
 ./build/Debug/iee.exe telemetry
+./build/Debug/iee.exe telemetry --persistence
+
+# latency breakdown profiler
+./build/Debug/iee.exe latency
+./build/Debug/iee.exe latency --json --limit 300
 
 # recent traces or a specific trace
 ./build/Debug/iee.exe trace
 ./build/Debug/iee.exe trace --id <trace_id>
+
+# start local API server
+./build/Debug/iee.exe api --port 8787
 ```
 
 ## API Usage
 
 ```powershell
-# start local API
+# start local API server
 ./build/Debug/iee.exe api --port 8787
 ```
 
@@ -116,8 +137,14 @@ Available routes:
 - `GET /health`
 - `GET /intents`
 - `GET /capabilities`
+- `GET /telemetry/persistence`
+- `GET /control/status`
+- `GET /stream/state`
 - `POST /execute`
 - `POST /explain`
+- `POST /control/start`
+- `POST /control/stop`
+- `POST /stream/control`
 
 Example execute payload:
 
@@ -125,6 +152,14 @@ Example execute payload:
 {
 	"action": "create",
 	"path": "notes.txt"
+}
+```
+
+Example stream-control macro payload:
+
+```json
+{
+	"sequence": "create|macro_a.txt;move|macro_a.txt|macro_b.txt;delete|macro_b.txt"
 }
 ```
 
@@ -146,14 +181,16 @@ The suite includes unit, integration, scenario, and stress coverage.
 Key validations include:
 
 - deterministic resolver outcomes
-- adapter reliability scoring behavior
+- adapter reliability behavior
 - failure injection and fallback behavior
 - API hardening under malformed payloads
-- execution stress-loop stability
+- high-frequency execution latency distribution
+- observation pipeline behavior
+- stream state/control and macro execution paths
 
 ## Engineering Rules
 
-This repo follows the IEE constitution:
+This repository follows the IEE constitution:
 
 - system over feature
 - determinism over heuristics

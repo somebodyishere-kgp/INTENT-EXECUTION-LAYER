@@ -29,11 +29,13 @@ ControlRuntime::ControlRuntime(
     IntentRegistry& registry,
     ExecutionEngine& executionEngine,
     EventBus& eventBus,
-    Telemetry& telemetry)
+        Telemetry& telemetry,
+        std::shared_ptr<EnvironmentAdapter> environmentAdapter)
     : registry_(registry),
       executionEngine_(executionEngine),
       eventBus_(eventBus),
-      telemetry_(telemetry) {
+            telemetry_(telemetry),
+            environmentAdapter_(std::move(environmentAdapter)) {
     uiChangedSubscriptionId_ = eventBus_.Subscribe(EventType::UiChanged, [this](const Event& event) {
         HandleEvent(event);
     });
@@ -89,6 +91,10 @@ bool ControlRuntime::Start(const ControlRuntimeConfig& config, std::string* mess
     pendingFsRefresh_ = false;
     lastCycleMs_ = 0;
     latestSnapshotVersion_ = 0;
+    latestObservationSequence_ = 0;
+    observationSamples_ = 0;
+    lastObservationCaptureMs_ = 0;
+    observationAdapterName_.clear();
     lastTraceId_.clear();
 
     highQueue_.clear();
@@ -98,6 +104,28 @@ bool ControlRuntime::Start(const ControlRuntimeConfig& config, std::string* mess
 
     stopRequested_ = false;
     running_ = true;
+
+    if (environmentAdapter_ == nullptr) {
+        environmentAdapter_ = std::make_shared<RegistryEnvironmentAdapter>(registry_);
+    }
+
+    observationConfig_.sampleIntervalMs = config.observationIntervalMs;
+    if (observationConfig_.sampleIntervalMs < 1) {
+        observationConfig_.sampleIntervalMs = std::max(1, config_.targetFrameMs / 2);
+    }
+
+    std::string observationMessage;
+    const bool observationStarted = observationPipeline_.Start(environmentAdapter_, observationConfig_, &observationMessage);
+    if (!observationStarted) {
+        running_ = false;
+        stopRequested_ = true;
+        if (message != nullptr) {
+            *message = "control runtime failed to start observation pipeline: " + observationMessage;
+        }
+        return false;
+    }
+
+    observationAdapterName_ = environmentAdapter_->Name();
 
     worker_ = std::thread(&ControlRuntime::RunLoop, this);
 
@@ -119,6 +147,8 @@ ControlRuntimeSummary ControlRuntime::Stop() {
     if (worker_.joinable()) {
         worker_.join();
     }
+
+    observationPipeline_.Stop();
 
     std::lock_guard<std::mutex> lock(mutex_);
     const auto percentiles = ComputePercentilesLocked();
@@ -155,6 +185,10 @@ ControlRuntimeSnapshot ControlRuntime::Status() const {
     snapshot.targetFrameMs = config_.targetFrameMs;
     snapshot.lastTraceId = lastTraceId_;
     snapshot.latestSnapshotVersion = latestSnapshotVersion_;
+    snapshot.latestObservationSequence = latestObservationSequence_;
+    snapshot.observationSamples = observationSamples_;
+    snapshot.lastObservationCaptureMs = lastObservationCaptureMs_;
+    snapshot.observationAdapter = observationAdapterName_;
     return snapshot;
 }
 
@@ -169,6 +203,7 @@ bool ControlRuntime::EnqueueIntent(const Intent& intent, ControlPriority priorit
     queued.intent = intent;
     queued.priority = priority;
     queued.sequence = nextSequence_++;
+    queued.enqueuedAt = std::chrono::steady_clock::now();
 
     switch (priority) {
     case ControlPriority::High:
@@ -184,6 +219,25 @@ bool ControlRuntime::EnqueueIntent(const Intent& intent, ControlPriority priorit
     }
 
     wakeCv_.notify_all();
+    return true;
+}
+
+bool ControlRuntime::LatestEnvironmentState(EnvironmentState* state) const {
+    if (state == nullptr) {
+        return false;
+    }
+
+    if (observationPipeline_.Latest(state)) {
+        return true;
+    }
+
+    const ObserverSnapshot snapshot = registry_.LastSnapshot();
+    if (!snapshot.valid) {
+        return false;
+    }
+
+    *state = EnvironmentStateFromSnapshot(snapshot, false);
+    state->perception = LightweightPerception::Analyze(*state);
     return true;
 }
 
@@ -217,12 +271,18 @@ void ControlRuntime::HandleEvent(const Event& event) {
     wakeCv_.notify_all();
 }
 
-bool ControlRuntime::PopIntentLocked(Intent* intent, ControlPriority* priority) {
+bool ControlRuntime::PopIntentLocked(
+    Intent* intent,
+    ControlPriority* priority,
+    std::chrono::steady_clock::time_point* enqueuedAt) {
     if (!highQueue_.empty()) {
         const QueuedIntent queued = std::move(highQueue_.front());
         highQueue_.pop_front();
         *intent = queued.intent;
         *priority = queued.priority;
+        if (enqueuedAt != nullptr) {
+            *enqueuedAt = queued.enqueuedAt;
+        }
         return true;
     }
 
@@ -231,6 +291,9 @@ bool ControlRuntime::PopIntentLocked(Intent* intent, ControlPriority* priority) 
         mediumQueue_.pop_front();
         *intent = queued.intent;
         *priority = queued.priority;
+        if (enqueuedAt != nullptr) {
+            *enqueuedAt = queued.enqueuedAt;
+        }
         return true;
     }
 
@@ -239,6 +302,9 @@ bool ControlRuntime::PopIntentLocked(Intent* intent, ControlPriority* priority) 
         lowQueue_.pop_front();
         *intent = queued.intent;
         *priority = queued.priority;
+        if (enqueuedAt != nullptr) {
+            *enqueuedAt = queued.enqueuedAt;
+        }
         return true;
     }
 
@@ -326,18 +392,43 @@ void ControlRuntime::RunLoop() {
             registry_.Refresh();
         }
 
-        const ObserverSnapshot snapshot = registry_.LastSnapshot();
+        EnvironmentState synchronizedState;
+        const auto observationLookupStart = std::chrono::steady_clock::now();
+        bool hasSynchronizedState = observationPipeline_.Latest(&synchronizedState);
+        if (!hasSynchronizedState) {
+            const ObserverSnapshot fallbackSnapshot = registry_.LastSnapshot();
+            if (fallbackSnapshot.valid) {
+                synchronizedState = EnvironmentStateFromSnapshot(fallbackSnapshot, false);
+                synchronizedState.perception = LightweightPerception::Analyze(synchronizedState);
+                hasSynchronizedState = true;
+            }
+        }
+        const auto observationLookupEnd = std::chrono::steady_clock::now();
+        const double observationLookupMs = static_cast<double>(
+            std::chrono::duration_cast<std::chrono::microseconds>(observationLookupEnd - observationLookupStart).count()) /
+            1000.0;
+
+        const ObservationPipelineMetrics observationMetrics = observationPipeline_.Metrics();
         {
             std::lock_guard<std::mutex> lock(mutex_);
-            latestSnapshotVersion_ = snapshot.sequence;
+            latestObservationSequence_ = hasSynchronizedState ? synchronizedState.sequence : 0;
+            latestSnapshotVersion_ = hasSynchronizedState
+                ? (synchronizedState.sourceSnapshotVersion == 0 ? synchronizedState.sequence : synchronizedState.sourceSnapshotVersion)
+                : 0;
+            observationSamples_ = observationMetrics.samples;
+            lastObservationCaptureMs_ = observationMetrics.lastCaptureMs;
+            if (!observationMetrics.adapterName.empty()) {
+                observationAdapterName_ = observationMetrics.adapterName;
+            }
         }
 
         Intent intent;
         ControlPriority priority{ControlPriority::Low};
         bool hasIntent = false;
+        std::chrono::steady_clock::time_point enqueuedAt = std::chrono::steady_clock::now();
         {
             std::lock_guard<std::mutex> lock(mutex_);
-            hasIntent = PopIntentLocked(&intent, &priority);
+            hasIntent = PopIntentLocked(&intent, &priority, &enqueuedAt);
         }
 
         if (hasIntent) {
@@ -348,18 +439,62 @@ void ControlRuntime::RunLoop() {
 
             if (remainingBudgetMs > 0) {
                 intent.context.controlFrame = currentFrame;
-                if (intent.context.snapshotVersion == 0) {
-                    intent.context.snapshotVersion = snapshot.sequence;
-                }
-                if (intent.context.snapshotTicks == 0 && snapshot.sequence > 0) {
-                    intent.context.snapshotTicks = snapshot.sequence;
+                if (hasSynchronizedState) {
+                    const std::uint64_t synchronizedSnapshotVersion =
+                        synchronizedState.sourceSnapshotVersion == 0
+                        ? synchronizedState.sequence
+                        : synchronizedState.sourceSnapshotVersion;
+
+                    if (intent.context.snapshotVersion == 0) {
+                        intent.context.snapshotVersion = synchronizedSnapshotVersion;
+                    }
+                    if (intent.context.snapshotTicks == 0 && synchronizedState.sequence > 0) {
+                        intent.context.snapshotTicks = synchronizedState.sequence;
+                    }
+                    if (intent.context.windowTitle.empty()) {
+                        intent.context.windowTitle = synchronizedState.activeWindowTitle;
+                    }
+                    if (intent.context.application.empty()) {
+                        intent.context.application = synchronizedState.activeProcessPath;
+                    }
+                    intent.context.cursor = synchronizedState.cursorPosition;
                 }
 
+                const double queueWaitMs = static_cast<double>(
+                    std::chrono::duration_cast<std::chrono::microseconds>(
+                        std::chrono::steady_clock::now() - enqueuedAt)
+                        .count()) /
+                    1000.0;
+
+                const auto executeStarted = std::chrono::steady_clock::now();
                 const ExecutionResult result =
                     executionEngine_.ExecuteWithBudget(intent, std::chrono::milliseconds(remainingBudgetMs));
+                const auto executeFinished = std::chrono::steady_clock::now();
+
                 if (result.IsSuccess() && !intent.id.empty()) {
                     registry_.RecordInteraction(intent.id);
                 }
+
+                const double executionWallMs = static_cast<double>(
+                    std::chrono::duration_cast<std::chrono::microseconds>(executeFinished - executeStarted).count()) /
+                    1000.0;
+                const double totalMs = static_cast<double>(
+                    std::chrono::duration_cast<std::chrono::microseconds>(executeFinished - frameStart).count()) /
+                    1000.0;
+
+                LatencyBreakdownSample breakdown;
+                breakdown.frame = currentFrame;
+                breakdown.traceId = result.traceId;
+                breakdown.observationMs = std::max(observationLookupMs, static_cast<double>(observationMetrics.lastCaptureMs));
+                breakdown.perceptionMs = hasSynchronizedState
+                    ? static_cast<double>(synchronizedState.perception.computeMs)
+                    : 0.0;
+                breakdown.queueWaitMs = std::max(0.0, queueWaitMs);
+                breakdown.executionMs = std::max(static_cast<double>(result.duration.count()), executionWallMs);
+                breakdown.verificationMs = 0.0;
+                breakdown.totalMs = std::max(0.0, totalMs);
+                breakdown.timestamp = std::chrono::system_clock::now();
+                telemetry_.LogLatencyBreakdown(breakdown);
 
                 std::lock_guard<std::mutex> lock(mutex_);
                 ++intentsExecuted_;
@@ -369,6 +504,7 @@ void ControlRuntime::RunLoop() {
                 queued.intent = intent;
                 queued.priority = priority;
                 queued.sequence = 0;
+                queued.enqueuedAt = enqueuedAt;
 
                 std::lock_guard<std::mutex> lock(mutex_);
                 ++droppedFrames_;
@@ -489,6 +625,12 @@ std::string ControlRuntime::SerializeSnapshotJson(const ControlRuntimeSnapshot& 
     stream << "\"last_cycle_ms\":" << snapshot.lastCycleMs << ",";
     stream << "\"target_frame_ms\":" << snapshot.targetFrameMs << ",";
     stream << "\"latest_snapshot_version\":" << snapshot.latestSnapshotVersion << ",";
+    stream << "\"observation\":{";
+    stream << "\"adapter\":\"" << EscapeJson(snapshot.observationAdapter) << "\",";
+    stream << "\"latest_sequence\":" << snapshot.latestObservationSequence << ",";
+    stream << "\"samples\":" << snapshot.observationSamples << ",";
+    stream << "\"last_capture_ms\":" << snapshot.lastObservationCaptureMs;
+    stream << "},";
     stream << "\"last_trace_id\":\"" << EscapeJson(snapshot.lastTraceId) << "\"";
     stream << "}";
     return stream.str();

@@ -111,6 +111,13 @@ int main() {
         }
 
         {
+            const std::string response = api.HandleRequestForTesting(BuildHttpRequest("GET", "/stream/state"));
+            AssertTrue(HasStatus(response, 200), "GET /stream/state should return 200");
+            AssertTrue(response.find("\"state\"") != std::string::npos, "Stream state response should include state object");
+            AssertTrue(response.find("\"perception\"") != std::string::npos, "Stream state response should include perception");
+        }
+
+        {
             const std::string response = api.HandleRequestForTesting(BuildHttpRequest("GET", "/capabilities"));
             AssertTrue(HasStatus(response, 200), "GET /capabilities should return 200");
             AssertTrue(response.find("\"capabilities\"") != std::string::npos, "Capabilities response should include capabilities array");
@@ -136,6 +143,28 @@ int main() {
         }
 
         {
+            const std::filesystem::path tempPath = "api_stream_control_create.txt";
+            const std::string body = "{\"action\":\"create\",\"path\":\"api_stream_control_create.txt\"}";
+            const std::string response = api.HandleRequestForTesting(BuildHttpRequest("POST", "/stream/control", body));
+            AssertTrue(HasStatus(response, 200), "POST /stream/control should return 200 for immediate single-step execution");
+            AssertTrue(response.find("\"success\":true") != std::string::npos, "Stream control response should report success");
+            AssertTrue(std::filesystem::exists(tempPath), "Stream control should materialize file");
+            if (std::filesystem::exists(tempPath)) {
+                std::filesystem::remove(tempPath);
+            }
+        }
+
+        {
+            const std::string body =
+                "{\"sequence\":\"create|api_stream_macro.txt;move|api_stream_macro.txt|api_stream_macro_moved.txt;delete|api_stream_macro_moved.txt\"}";
+            const std::string response = api.HandleRequestForTesting(BuildHttpRequest("POST", "/stream/control", body));
+            AssertTrue(HasStatus(response, 200), "POST /stream/control should support macro sequence execution");
+            AssertTrue(response.find("\"attempted_steps\":3") != std::string::npos, "Macro sequence should execute three steps");
+            AssertTrue(!std::filesystem::exists("api_stream_macro.txt"), "Macro sequence should move/delete source file");
+            AssertTrue(!std::filesystem::exists("api_stream_macro_moved.txt"), "Macro sequence should delete moved file");
+        }
+
+        {
             const std::string response = api.HandleRequestForTesting(
                 BuildHttpRequest("POST", "/control/start", "{\"latencyBudgetMs\":\"2\"}"));
             AssertTrue(HasStatus(response, 200), "POST /control/start should return 200");
@@ -153,6 +182,14 @@ int main() {
             const std::string response = api.HandleRequestForTesting(BuildHttpRequest("POST", "/execute", body));
             AssertTrue(HasStatus(response, 202), "Queued execute should return 202");
             AssertTrue(response.find("\"queued\":true") != std::string::npos, "Queued execute should report queued=true");
+        }
+
+        {
+            const std::string body =
+                "{\"action\":\"activate\",\"target\":\"Save\",\"mode\":\"queued\",\"priority\":\"high\",\"repeat\":\"2\"}";
+            const std::string response = api.HandleRequestForTesting(BuildHttpRequest("POST", "/stream/control", body));
+            AssertTrue(HasStatus(response, 202), "Queued stream control should return 202");
+            AssertTrue(response.find("\"queued_count\":2") != std::string::npos, "Queued stream control should enqueue two steps");
         }
 
         {

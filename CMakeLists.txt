@@ -19,8 +19,10 @@ add_library(iee_core
     core/event/src/EventBus.cpp
     core/event/src/Logger.cpp
     core/event/src/SystemWatchers.cpp
+    core/execution/src/ActionSequence.cpp
     core/execution/src/Adapter.cpp
     core/execution/src/ControlRuntime.cpp
+    core/execution/src/EnvironmentAdapter.cpp
     core/execution/src/ExecutionEngine.cpp
     core/intent/src/Intent.cpp
     core/intent/src/IntentNormalizer.cpp
@@ -96,6 +98,12 @@ add_executable(iee_test_unit_telemetry
 target_include_directories(iee_test_unit_telemetry PRIVATE tests)
 target_link_libraries(iee_test_unit_telemetry PRIVATE iee_core)
 
+add_executable(iee_test_unit_observation_pipeline
+    tests/unit_observation_pipeline.cpp
+)
+target_include_directories(iee_test_unit_observation_pipeline PRIVATE tests)
+target_link_libraries(iee_test_unit_observation_pipeline PRIVATE iee_core)
+
 add_executable(iee_test_integration_failure_injection
     tests/integration_failure_injection.cpp
 )
@@ -126,6 +134,7 @@ add_test(NAME integration_execution_filesystem COMMAND iee_test_integration_exec
 add_test(NAME scenario_resolution COMMAND iee_test_scenario_resolution)
 add_test(NAME unit_adapter_reliability COMMAND iee_test_unit_adapter_reliability)
 add_test(NAME unit_telemetry COMMAND iee_test_unit_telemetry)
+add_test(NAME unit_observation_pipeline COMMAND iee_test_unit_observation_pipeline)
 add_test(NAME integration_failure_injection COMMAND iee_test_integration_failure_injection)
 add_test(NAME integration_api_hardening COMMAND iee_test_integration_api_hardening)
 add_test(NAME stress_execution_loop COMMAND iee_test_stress_execution)

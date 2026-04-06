@@ -65,6 +65,35 @@ struct TelemetryPersistenceStatus {
     std::vector<std::string> files;
 };
 
+struct LatencyBreakdownSample {
+    std::uint64_t frame{0};
+    std::string traceId;
+    double observationMs{0.0};
+    double perceptionMs{0.0};
+    double queueWaitMs{0.0};
+    double executionMs{0.0};
+    double verificationMs{0.0};
+    double totalMs{0.0};
+    std::chrono::system_clock::time_point timestamp{std::chrono::system_clock::now()};
+};
+
+struct LatencyComponentStats {
+    double averageMs{0.0};
+    double p95Ms{0.0};
+    double maxMs{0.0};
+};
+
+struct LatencyBreakdownSnapshot {
+    std::uint64_t sampleCount{0};
+    LatencyComponentStats observation;
+    LatencyComponentStats perception;
+    LatencyComponentStats queueWait;
+    LatencyComponentStats execution;
+    LatencyComponentStats verification;
+    LatencyComponentStats total;
+    std::optional<LatencyBreakdownSample> latest;
+};
+
 class Telemetry {
 public:
     Telemetry();
@@ -82,6 +111,7 @@ public:
         bool fastPath);
     void LogFailure(const std::string& traceId, const std::string& component, const std::string& message);
     void LogResolutionTiming(std::chrono::milliseconds duration);
+    void LogLatencyBreakdown(const LatencyBreakdownSample& sample);
 
     std::vector<ExecutionTrace> RecentExecutions(std::size_t limit = 50) const;
     std::vector<ExecutionTrace> QueryExecutions(
@@ -91,10 +121,12 @@ public:
     std::optional<ExecutionTrace> FindTrace(const std::string& traceId) const;
     TelemetrySnapshot Snapshot() const;
     TelemetryPersistenceStatus PersistenceStatus() const;
+    LatencyBreakdownSnapshot LatencySnapshot(std::size_t limit = 200) const;
 
     std::string SerializeSnapshotJson() const;
     std::string SerializeTraceJson(const std::string& traceId) const;
     std::string SerializePersistenceJson() const;
+    std::string SerializeLatencyJson(std::size_t limit = 200) const;
 
 private:
     struct AdapterAggregate {
@@ -125,6 +157,7 @@ private:
     bool traceBufferWrapped_{false};
     std::deque<AdapterDecisionEvent> adapterDecisions_;
     std::deque<std::string> failures_;
+    std::deque<LatencyBreakdownSample> latencyBreakdowns_;
 
     std::unordered_map<std::string, AdapterAggregate> adapterAggregates_;
 
@@ -159,6 +192,7 @@ private:
     static constexpr std::size_t kMaxPersistedFiles = 8;
     static constexpr std::size_t kMaxTraceFileBytes = 1024 * 1024;
     static constexpr std::size_t kMaxPersistenceQueue = 4096;
+    static constexpr std::size_t kMaxLatencySamples = 4096;
 };
 
 }  // namespace iee

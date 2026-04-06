@@ -22,6 +22,7 @@ private:
     int HandleApi(const ParsedCommand& command);
     int HandleTelemetry(const ParsedCommand& command);
     int HandleTrace(const ParsedCommand& command);
+    int HandleLatency(const ParsedCommand& command);
 
     IntentRegistry& intentRegistry_;
     ExecutionEngine& executionEngine_;

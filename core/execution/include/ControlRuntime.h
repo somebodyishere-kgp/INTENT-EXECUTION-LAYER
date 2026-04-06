@@ -5,11 +5,13 @@
 #include <condition_variable>
 #include <cstdint>
 #include <deque>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <thread>
 #include <vector>
 
+#include "EnvironmentAdapter.h"
 #include "EventBus.h"
 #include "ExecutionEngine.h"
 #include "Intent.h"
@@ -27,6 +29,7 @@ enum class ControlPriority {
 struct ControlRuntimeConfig {
     int targetFrameMs{16};
     std::uint64_t maxFrames{0};
+    int observationIntervalMs{8};
 };
 
 struct ControlRuntimeSnapshot {
@@ -46,6 +49,10 @@ struct ControlRuntimeSnapshot {
     std::int64_t targetFrameMs{16};
     std::string lastTraceId;
     std::uint64_t latestSnapshotVersion{0};
+    std::uint64_t latestObservationSequence{0};
+    std::uint64_t observationSamples{0};
+    std::int64_t lastObservationCaptureMs{0};
+    std::string observationAdapter;
 };
 
 struct ControlRuntimeSummary {
@@ -61,7 +68,12 @@ struct ControlRuntimeSummary {
 
 class ControlRuntime {
 public:
-    ControlRuntime(IntentRegistry& registry, ExecutionEngine& executionEngine, EventBus& eventBus, Telemetry& telemetry);
+    ControlRuntime(
+        IntentRegistry& registry,
+        ExecutionEngine& executionEngine,
+        EventBus& eventBus,
+        Telemetry& telemetry,
+        std::shared_ptr<EnvironmentAdapter> environmentAdapter = nullptr);
     ~ControlRuntime();
 
     bool Start(const ControlRuntimeConfig& config, std::string* message = nullptr);
@@ -69,6 +81,7 @@ public:
     ControlRuntimeSnapshot Status() const;
 
     bool EnqueueIntent(const Intent& intent, ControlPriority priority);
+    bool LatestEnvironmentState(EnvironmentState* state) const;
 
     static std::string SerializeSnapshotJson(const ControlRuntimeSnapshot& snapshot);
     static std::string SerializeSummaryJson(const ControlRuntimeSummary& summary);
@@ -78,11 +91,15 @@ private:
         Intent intent;
         ControlPriority priority{ControlPriority::Low};
         std::uint64_t sequence{0};
+        std::chrono::steady_clock::time_point enqueuedAt{std::chrono::steady_clock::now()};
     };
 
     void RunLoop();
     void HandleEvent(const Event& event);
-    bool PopIntentLocked(Intent* intent, ControlPriority* priority);
+    bool PopIntentLocked(
+        Intent* intent,
+        ControlPriority* priority,
+        std::chrono::steady_clock::time_point* enqueuedAt = nullptr);
     std::array<double, 3> ComputePercentilesLocked() const;
 
     static std::string EscapeJson(const std::string& value);
@@ -122,6 +139,14 @@ private:
     std::deque<QueuedIntent> mediumQueue_;
     std::deque<QueuedIntent> lowQueue_;
     std::vector<std::int64_t> cycleLatenciesMs_;
+
+    std::shared_ptr<EnvironmentAdapter> environmentAdapter_;
+    ObservationPipeline observationPipeline_;
+    ObservationPipelineConfig observationConfig_;
+    std::uint64_t latestObservationSequence_{0};
+    std::uint64_t observationSamples_{0};
+    std::int64_t lastObservationCaptureMs_{0};
+    std::string observationAdapterName_;
 
     EventBus::SubscriptionId uiChangedSubscriptionId_{0};
     EventBus::SubscriptionId fileChangedSubscriptionId_{0};

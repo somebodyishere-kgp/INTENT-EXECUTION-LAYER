@@ -14,6 +14,8 @@
 #include <string_view>
 #include <thread>
 
+#include "ActionSequence.h"
+
 #pragma comment(lib, "Ws2_32.lib")
 
 namespace iee {
@@ -347,12 +349,189 @@ bool ParseUint64(const std::string& value, std::uint64_t* output) {
     return true;
 }
 
+std::int64_t EpochMs(std::chrono::system_clock::time_point timePoint) {
+    return static_cast<std::int64_t>(
+        std::chrono::duration_cast<std::chrono::milliseconds>(timePoint.time_since_epoch()).count());
+}
+
+std::string SerializeEnvironmentStateJson(const EnvironmentState& state) {
+    std::ostringstream json;
+    json << "{";
+    json << "\"sequence\":" << state.sequence << ",";
+    json << "\"source_snapshot_version\":" << state.sourceSnapshotVersion << ",";
+    json << "\"captured_at_ms\":" << EpochMs(state.capturedAt) << ",";
+    json << "\"active_window_title\":\"" << EscapeJson(Narrow(state.activeWindowTitle)) << "\",";
+    json << "\"active_process_path\":\"" << EscapeJson(Narrow(state.activeProcessPath)) << "\",";
+    json << "\"cursor\":{";
+    json << "\"x\":" << state.cursorPosition.x << ",";
+    json << "\"y\":" << state.cursorPosition.y;
+    json << "},";
+    json << "\"ui_element_count\":" << state.uiElements.size() << ",";
+    json << "\"filesystem_entry_count\":" << state.fileSystemEntries.size() << ",";
+    json << "\"simulated\":" << (state.simulated ? "true" : "false") << ",";
+    json << "\"valid\":" << (state.valid ? "true" : "false") << ",";
+    json << "\"perception\":{";
+    json << "\"dominant_surface\":\"" << EscapeJson(state.perception.dominantSurface) << "\",";
+    json << "\"focus_ratio\":" << state.perception.focusRatio << ",";
+    json << "\"occupancy_ratio\":" << state.perception.occupancyRatio << ",";
+    json << "\"ui_signature\":" << state.perception.uiSignature << ",";
+    json << "\"compute_ms\":" << state.perception.computeMs << ",";
+    json << "\"regions\":[";
+
+    for (std::size_t index = 0; index < state.perception.regions.size(); ++index) {
+        if (index > 0) {
+            json << ",";
+        }
+        const EnvironmentRegion& region = state.perception.regions[index];
+        json << "{";
+        json << "\"left\":" << region.bounds.left << ",";
+        json << "\"top\":" << region.bounds.top << ",";
+        json << "\"right\":" << region.bounds.right << ",";
+        json << "\"bottom\":" << region.bounds.bottom << ",";
+        json << "\"element_count\":" << region.elementCount << ",";
+        json << "\"has_focus\":" << (region.hasFocus ? "true" : "false");
+        json << "}";
+    }
+
+    json << "]";
+    json << "}";
+    json << "}";
+    return json.str();
+}
+
+bool BuildStreamIntent(
+    const std::map<std::string, std::string>& payload,
+    Intent* intent,
+    std::string* errorCode,
+    std::string* errorMessage) {
+    if (intent == nullptr) {
+        if (errorCode != nullptr) {
+            *errorCode = "invalid_request";
+        }
+        if (errorMessage != nullptr) {
+            *errorMessage = "Intent output is null";
+        }
+        return false;
+    }
+
+    const std::string actionRaw = ReadPayloadValue(payload, {"action"});
+    const IntentAction action = IntentActionFromString(actionRaw);
+    if (action == IntentAction::Unknown) {
+        if (errorCode != nullptr) {
+            *errorCode = actionRaw.empty() ? "missing_action" : "unknown_action";
+        }
+        if (errorMessage != nullptr) {
+            *errorMessage = actionRaw.empty() ? "Missing required field: action" : "Unknown action";
+        }
+        return false;
+    }
+
+    Intent streamIntent;
+    streamIntent.action = action;
+    streamIntent.name = ToString(action);
+    streamIntent.source = "stream";
+    streamIntent.confidence = 1.0F;
+
+    if (IsUiAction(action)) {
+        const std::string target = ReadPayloadValue(payload, {"target"});
+        if (target.empty()) {
+            if (errorCode != nullptr) {
+                *errorCode = "missing_target";
+            }
+            if (errorMessage != nullptr) {
+                *errorMessage = "Missing required field: target";
+            }
+            return false;
+        }
+
+        streamIntent.target.type = TargetType::UiElement;
+        streamIntent.target.label = Wide(target);
+
+        if (action == IntentAction::SetValue) {
+            const std::string value = ReadPayloadValue(payload, {"value"});
+            if (value.empty()) {
+                if (errorCode != nullptr) {
+                    *errorCode = "missing_value";
+                }
+                if (errorMessage != nullptr) {
+                    *errorMessage = "Missing required field: value";
+                }
+                return false;
+            }
+            streamIntent.params.values["value"] = Wide(value);
+        }
+    } else if (IsFileAction(action)) {
+        const std::string path = ReadPayloadValue(payload, {"path"});
+        if (path.empty()) {
+            if (errorCode != nullptr) {
+                *errorCode = "missing_path";
+            }
+            if (errorMessage != nullptr) {
+                *errorMessage = "Missing required field: path";
+            }
+            return false;
+        }
+
+        streamIntent.target.type = TargetType::FileSystemPath;
+        streamIntent.target.path = Wide(path);
+        streamIntent.target.label = streamIntent.target.path;
+        streamIntent.params.values["path"] = streamIntent.target.path;
+
+        if (action == IntentAction::Move) {
+            const std::string destination = ReadPayloadValue(payload, {"destination"});
+            if (destination.empty()) {
+                if (errorCode != nullptr) {
+                    *errorCode = "missing_destination";
+                }
+                if (errorMessage != nullptr) {
+                    *errorMessage = "Missing required field: destination";
+                }
+                return false;
+            }
+
+            streamIntent.params.values["destination"] = Wide(destination);
+        }
+    } else {
+        if (errorCode != nullptr) {
+            *errorCode = "unsupported_action";
+        }
+        if (errorMessage != nullptr) {
+            *errorMessage = "Action is not executable";
+        }
+        return false;
+    }
+
+    int timeoutMs = 0;
+    if (ParseInt32(ReadPayloadValue(payload, {"timeout_ms", "timeoutMs"}), &timeoutMs) && timeoutMs > 0) {
+        streamIntent.constraints.timeoutMs = timeoutMs;
+    }
+
+    int retries = 0;
+    if (ParseInt32(ReadPayloadValue(payload, {"max_retries", "maxRetries"}), &retries) && retries >= 0) {
+        streamIntent.constraints.maxRetries = retries;
+    }
+
+    *intent = std::move(streamIntent);
+    return true;
+}
+
+std::size_t ReadRepeatCount(const std::map<std::string, std::string>& payload) {
+    std::uint64_t parsed = 0;
+    if (!ParseUint64(ReadPayloadValue(payload, {"repeat", "repeat_count"}), &parsed)) {
+        return 1U;
+    }
+
+    const std::uint64_t bounded = std::clamp<std::uint64_t>(parsed, 1ULL, 64ULL);
+    return static_cast<std::size_t>(bounded);
+}
+
 }  // namespace
 
 IntentApiServer::IntentApiServer(IntentRegistry& registry, ExecutionEngine& executionEngine, Telemetry& telemetry)
     : registry_(registry),
       executionEngine_(executionEngine),
       telemetry_(telemetry),
+    streamEnvironmentAdapter_(std::make_shared<RegistryEnvironmentAdapter>(registry_)),
       startedAt_(std::chrono::steady_clock::now()) {}
 
 int IntentApiServer::Run(std::uint16_t port, bool singleRequest, std::size_t maxRequests) {
@@ -514,7 +693,8 @@ ControlRuntime& IntentApiServer::EnsureControlRuntime() {
             registry_,
             executionEngine_,
             executionEngine_.Events(),
-            telemetry_);
+            telemetry_,
+            streamEnvironmentAdapter_);
     }
 
     return *controlRuntime_;
@@ -633,6 +813,41 @@ std::string IntentApiServer::HandleRequest(const std::string& request) {
         return BuildResponse(200, "OK", ControlRuntime::SerializeSnapshotJson(controlRuntime_->Status()));
     }
 
+    if (method == "GET" && path == "/stream/state") {
+        const bool runtimeActive = controlRuntime_ != nullptr && controlRuntime_->Status().active;
+
+        EnvironmentState state;
+        bool captured = false;
+        if (runtimeActive) {
+            captured = controlRuntime_->LatestEnvironmentState(&state);
+        }
+
+        if (!captured && streamEnvironmentAdapter_ != nullptr) {
+            std::string captureError;
+            captured = streamEnvironmentAdapter_->CaptureState(&state, &captureError);
+        }
+
+        if (!captured) {
+            return BuildErrorResponse(503, "Service Unavailable", "stream_state_unavailable", "Unable to capture environment state");
+        }
+
+        if (state.perception.regions.empty() && !state.uiElements.empty()) {
+            state.perception = LightweightPerception::Analyze(state);
+        }
+
+        std::ostringstream json;
+        json << "{";
+        json << "\"runtime_active\":" << (runtimeActive ? "true" : "false") << ",";
+        json << "\"state\":" << SerializeEnvironmentStateJson(state) << ",";
+        json << "\"latency\":" << telemetry_.SerializeLatencyJson(200);
+        if (runtimeActive) {
+            json << ",\"control_status\":" << ControlRuntime::SerializeSnapshotJson(controlRuntime_->Status());
+        }
+        json << "}";
+
+        return BuildResponse(200, "OK", json.str());
+    }
+
     if (method == "POST" && path == "/control/start") {
         std::map<std::string, std::string> payload;
         if (!body.empty()) {
@@ -656,6 +871,13 @@ std::string IntentApiServer::HandleRequest(const std::string& request) {
                 return BuildErrorResponse(400, "Bad Request", "max_frames_exceeded", "maxFrames exceeds safety limit");
             }
             config.maxFrames = maxFrames;
+        }
+
+        int observationIntervalMs = 0;
+        if (ParseInt32(
+                ReadPayloadValue(payload, {"observationIntervalMs", "observation_interval_ms"}),
+                &observationIntervalMs)) {
+            config.observationIntervalMs = observationIntervalMs;
         }
 
         ControlRuntime& runtime = EnsureControlRuntime();
@@ -686,6 +908,125 @@ std::string IntentApiServer::HandleRequest(const std::string& request) {
         json << "}";
 
         return BuildResponse(200, "OK", json.str());
+    }
+
+    if (method == "POST" && path == "/stream/control") {
+        std::map<std::string, std::string> payload;
+        std::string jsonError;
+        if (!ParseFlatJsonObject(body, &payload, &jsonError)) {
+            return BuildErrorResponse(400, "Bad Request", "invalid_json", jsonError);
+        }
+
+        const std::string dsl = ReadPayloadValue(payload, {"sequence", "macro"});
+
+        ActionSequence sequence;
+        if (!dsl.empty()) {
+            Intent templateIntent;
+            templateIntent.source = "stream";
+            templateIntent.confidence = 1.0F;
+
+            std::string parseError;
+            if (!ParseActionSequenceDsl(dsl, templateIntent, &sequence, &parseError)) {
+                return BuildErrorResponse(400, "Bad Request", "invalid_sequence", parseError);
+            }
+        } else {
+            Intent streamIntent;
+            std::string errorCode;
+            std::string errorMessage;
+            if (!BuildStreamIntent(payload, &streamIntent, &errorCode, &errorMessage)) {
+                return BuildErrorResponse(400, "Bad Request", errorCode, errorMessage);
+            }
+
+            const std::size_t repeat = ReadRepeatCount(payload);
+            sequence = BuildRepeatedSequence(streamIntent, repeat, "stream-control");
+        }
+
+        const std::string executionMode = ToAsciiLower(ReadPayloadValue(payload, {"mode", "execution_mode"}));
+        if (executionMode == "queued" || executionMode == "realtime") {
+            if (!controlRuntime_ || !controlRuntime_->Status().active) {
+                return BuildErrorResponse(
+                    409,
+                    "Conflict",
+                    "control_not_running",
+                    "Control runtime must be running for queued stream control");
+            }
+
+            const std::string priorityRaw = ToAsciiLower(ReadPayloadValue(payload, {"priority"}));
+            ControlPriority priority = ControlPriority::Medium;
+            if (priorityRaw == "high") {
+                priority = ControlPriority::High;
+            } else if (priorityRaw == "low") {
+                priority = ControlPriority::Low;
+            }
+
+            std::size_t queuedCount = 0;
+            for (const ActionStep& step : sequence.steps) {
+                if (!controlRuntime_->EnqueueIntent(step.intent, priority)) {
+                    return BuildErrorResponse(409, "Conflict", "control_enqueue_failed", "Unable to enqueue stream step");
+                }
+                ++queuedCount;
+            }
+
+            std::ostringstream queuedJson;
+            queuedJson << "{";
+            queuedJson << "\"queued\":true,";
+            queuedJson << "\"queued_count\":" << queuedCount << ",";
+            queuedJson << "\"priority\":\"" << EscapeJson(priorityRaw.empty() ? "medium" : priorityRaw) << "\",";
+            queuedJson << "\"status\":" << ControlRuntime::SerializeSnapshotJson(controlRuntime_->Status());
+            queuedJson << "}";
+            return BuildResponse(202, "Accepted", queuedJson.str());
+        }
+
+        EnvironmentState synchronizedState;
+        bool hasSynchronizedState = false;
+        if (controlRuntime_ != nullptr && controlRuntime_->Status().active) {
+            hasSynchronizedState = controlRuntime_->LatestEnvironmentState(&synchronizedState);
+        }
+
+        if (!hasSynchronizedState && streamEnvironmentAdapter_ != nullptr) {
+            std::string captureError;
+            hasSynchronizedState = streamEnvironmentAdapter_->CaptureState(&synchronizedState, &captureError);
+        }
+
+        MacroExecutor macroExecutor(executionEngine_);
+        const ActionSequenceResult sequenceResult =
+            macroExecutor.Execute(sequence, hasSynchronizedState ? &synchronizedState : nullptr);
+
+        std::ostringstream resultJson;
+        resultJson << "{";
+        resultJson << "\"success\":" << (sequenceResult.success ? "true" : "false") << ",";
+        resultJson << "\"sequence_id\":\"" << EscapeJson(sequenceResult.sequenceId) << "\",";
+        resultJson << "\"attempted_steps\":" << sequenceResult.attemptedSteps << ",";
+        resultJson << "\"completed_steps\":" << sequenceResult.completedSteps << ",";
+        resultJson << "\"total_duration_ms\":" << sequenceResult.totalDuration.count() << ",";
+        resultJson << "\"message\":\"" << EscapeJson(sequenceResult.message) << "\",";
+        resultJson << "\"steps\":[";
+
+        for (std::size_t index = 0; index < sequenceResult.stepResults.size(); ++index) {
+            if (index > 0) {
+                resultJson << ",";
+            }
+
+            const ExecutionResult& stepResult = sequenceResult.stepResults[index];
+            resultJson << "{";
+            resultJson << "\"index\":" << index << ",";
+            resultJson << "\"status\":\"" << EscapeJson(ToString(stepResult.status)) << "\",";
+            resultJson << "\"trace_id\":\"" << EscapeJson(stepResult.traceId) << "\",";
+            resultJson << "\"method\":\"" << EscapeJson(stepResult.method) << "\",";
+            resultJson << "\"message\":\"" << EscapeJson(stepResult.message) << "\",";
+            resultJson << "\"duration_ms\":" << stepResult.duration.count() << ",";
+            resultJson << "\"verified\":" << (stepResult.verified ? "true" : "false");
+            resultJson << "}";
+        }
+
+        resultJson << "]";
+        if (hasSynchronizedState) {
+            resultJson << ",\"state_sequence\":" << synchronizedState.sequence;
+        }
+        resultJson << "}";
+
+        const int statusCode = sequenceResult.success ? 200 : 500;
+        return BuildResponse(statusCode, statusCode == 200 ? "OK" : "Internal Server Error", resultJson.str());
     }
 
     if (method == "POST" && (path == "/execute" || path == "/explain")) {

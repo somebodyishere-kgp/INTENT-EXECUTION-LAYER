@@ -114,6 +114,27 @@ std::string SerializeTraceLine(const ExecutionTrace& trace) {
     return stream.str();
 }
 
+LatencyComponentStats BuildLatencyStats(std::vector<double> values) {
+    LatencyComponentStats stats;
+    if (values.empty()) {
+        return stats;
+    }
+
+    double sum = 0.0;
+    for (double value : values) {
+        sum += value;
+        if (value > stats.maxMs) {
+            stats.maxMs = value;
+        }
+    }
+    stats.averageMs = sum / static_cast<double>(values.size());
+
+    std::sort(values.begin(), values.end());
+    const std::size_t index = ((values.size() - 1U) * 95U) / 100U;
+    stats.p95Ms = values[index];
+    return stats;
+}
+
 }  // namespace
 
 Telemetry::Telemetry()
@@ -235,6 +256,15 @@ void Telemetry::LogResolutionTiming(std::chrono::milliseconds duration) {
     std::lock_guard<std::mutex> lock(mutex_);
     ++resolutionSamples_;
     totalResolutionMs_ += static_cast<double>(duration.count());
+}
+
+void Telemetry::LogLatencyBreakdown(const LatencyBreakdownSample& sample) {
+    std::lock_guard<std::mutex> lock(mutex_);
+
+    latencyBreakdowns_.push_back(sample);
+    if (latencyBreakdowns_.size() > kMaxLatencySamples) {
+        latencyBreakdowns_.pop_front();
+    }
 }
 
 std::vector<ExecutionTrace> Telemetry::RecentExecutions(std::size_t limit) const {
@@ -366,6 +396,55 @@ TelemetryPersistenceStatus Telemetry::PersistenceStatus() const {
     return status;
 }
 
+LatencyBreakdownSnapshot Telemetry::LatencySnapshot(std::size_t limit) const {
+    LatencyBreakdownSnapshot snapshot;
+
+    std::vector<double> observationValues;
+    std::vector<double> perceptionValues;
+    std::vector<double> queueValues;
+    std::vector<double> executionValues;
+    std::vector<double> verificationValues;
+    std::vector<double> totalValues;
+
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+
+        const std::size_t cappedLimit = std::max<std::size_t>(1U, limit);
+        const std::size_t start = latencyBreakdowns_.size() > cappedLimit ? latencyBreakdowns_.size() - cappedLimit : 0U;
+        const std::size_t count = latencyBreakdowns_.size() - start;
+        snapshot.sampleCount = count;
+
+        observationValues.reserve(count);
+        perceptionValues.reserve(count);
+        queueValues.reserve(count);
+        executionValues.reserve(count);
+        verificationValues.reserve(count);
+        totalValues.reserve(count);
+
+        for (std::size_t index = start; index < latencyBreakdowns_.size(); ++index) {
+            const LatencyBreakdownSample& sample = latencyBreakdowns_[index];
+            observationValues.push_back(sample.observationMs);
+            perceptionValues.push_back(sample.perceptionMs);
+            queueValues.push_back(sample.queueWaitMs);
+            executionValues.push_back(sample.executionMs);
+            verificationValues.push_back(sample.verificationMs);
+            totalValues.push_back(sample.totalMs);
+        }
+
+        if (!latencyBreakdowns_.empty()) {
+            snapshot.latest = latencyBreakdowns_.back();
+        }
+    }
+
+    snapshot.observation = BuildLatencyStats(std::move(observationValues));
+    snapshot.perception = BuildLatencyStats(std::move(perceptionValues));
+    snapshot.queueWait = BuildLatencyStats(std::move(queueValues));
+    snapshot.execution = BuildLatencyStats(std::move(executionValues));
+    snapshot.verification = BuildLatencyStats(std::move(verificationValues));
+    snapshot.total = BuildLatencyStats(std::move(totalValues));
+    return snapshot;
+}
+
 std::string Telemetry::SerializeSnapshotJson() const {
     const TelemetrySnapshot snapshot = Snapshot();
 
@@ -434,6 +513,51 @@ std::string Telemetry::SerializePersistenceJson() const {
     }
 
     stream << "]";
+    stream << "}";
+    return stream.str();
+}
+
+std::string Telemetry::SerializeLatencyJson(std::size_t limit) const {
+    const LatencyBreakdownSnapshot snapshot = LatencySnapshot(limit);
+
+    const auto appendComponent = [](std::ostringstream* stream, const char* key, const LatencyComponentStats& stats, bool leadingComma) {
+        if (leadingComma) {
+            *stream << ",";
+        }
+
+        *stream << "\"" << key << "\":{";
+        *stream << "\"avg_ms\":" << std::fixed << std::setprecision(3) << stats.averageMs << ",";
+        *stream << "\"p95_ms\":" << std::fixed << std::setprecision(3) << stats.p95Ms << ",";
+        *stream << "\"max_ms\":" << std::fixed << std::setprecision(3) << stats.maxMs;
+        *stream << "}";
+    };
+
+    std::ostringstream stream;
+    stream << "{";
+    stream << "\"sample_count\":" << snapshot.sampleCount;
+
+    appendComponent(&stream, "observation", snapshot.observation, true);
+    appendComponent(&stream, "perception", snapshot.perception, true);
+    appendComponent(&stream, "queue_wait", snapshot.queueWait, true);
+    appendComponent(&stream, "execution", snapshot.execution, true);
+    appendComponent(&stream, "verification", snapshot.verification, true);
+    appendComponent(&stream, "total", snapshot.total, true);
+
+    if (snapshot.latest.has_value()) {
+        const LatencyBreakdownSample& latest = *snapshot.latest;
+        stream << ",\"latest\":{";
+        stream << "\"frame\":" << latest.frame << ",";
+        stream << "\"trace_id\":\"" << EscapeJson(latest.traceId) << "\",";
+        stream << "\"observation_ms\":" << std::fixed << std::setprecision(3) << latest.observationMs << ",";
+        stream << "\"perception_ms\":" << std::fixed << std::setprecision(3) << latest.perceptionMs << ",";
+        stream << "\"queue_wait_ms\":" << std::fixed << std::setprecision(3) << latest.queueWaitMs << ",";
+        stream << "\"execution_ms\":" << std::fixed << std::setprecision(3) << latest.executionMs << ",";
+        stream << "\"verification_ms\":" << std::fixed << std::setprecision(3) << latest.verificationMs << ",";
+        stream << "\"total_ms\":" << std::fixed << std::setprecision(3) << latest.totalMs << ",";
+        stream << "\"timestamp_ms\":" << EpochMs(latest.timestamp);
+        stream << "}";
+    }
+
     stream << "}";
     return stream.str();
 }

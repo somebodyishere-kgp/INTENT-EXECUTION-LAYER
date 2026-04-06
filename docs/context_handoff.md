@@ -1,82 +1,84 @@
-# IEE Context Handoff (v1.2)
+# IEE Context Handoff (v1.3)
 
 ## 1. What Are We Building
-The Intent Execution Engine (IEE): a native deterministic control-plane runtime that exposes software state as intents and executes actions through extensible adapters. In v1.2, the runtime now includes continuous control-loop execution, cache invalidation v2, telemetry persistence, and control-plane lifecycle APIs.
+The Intent Execution Engine (IEE): a deterministic native execution layer that converts live OS/application state into a structured intent space and executes actions through verifiable adapters. v1.3 extends this into environment-aware real-time control with synchronized observation + execution pipelines.
 
 ## 2. Current State
-Completed in v1.2:
-- New `ControlRuntime` module with:
-  - start/stop lifecycle
-  - frame-budget loop (`targetFrameMs`)
-  - max-frame run cap
-  - priority-aware queueing and event processing
-  - status/summary serialization
-- Execution engine hardening:
-  - `ExecuteWithBudget(...)` path
-  - cumulative timeout enforcement across retries
-  - fast-path cache v2 (params hash + snapshot version + LRU-style eviction)
-- Intent/registry correctness metadata:
-  - `Context` extended with `snapshotVersion` and `controlFrame`
-  - resolution cache invalidation v2 via `cacheEpoch`
-- Adapter layer:
-  - `InputAdapter` added for deterministic keyboard/mouse fallback path
-- Telemetry v2:
-  - async persistence queue
-  - rotating JSONL files in `artifacts/telemetry`
-  - snapshot/persistence status enrichment
-- API extensions:
-  - `GET /control/status`
-  - `POST /control/start`
-  - `POST /control/stop`
-  - `GET /telemetry/persistence`
-  - `POST /execute` queued/realtime mode with priority
-- CLI observability extensions:
-  - `telemetry --status/--adapter/--limit`
-  - `telemetry --persistence`
+Completed in v1.3:
+- Environment abstraction primitives:
+  - `EnvironmentAdapter`
+  - `EnvironmentState`
+  - `RegistryEnvironmentAdapter`
+  - `MockEnvironmentAdapter`
+- High-frequency observation system:
+  - `ObservationPipeline` with double-buffered state handoff
+  - pipeline metrics for sampling health and latency
+- Lightweight perception layer:
+  - dominant surface classification
+  - focus/occupancy ratios
+  - UI signature
+  - region density/focus map
+- Macro composition and execution:
+  - `ActionSequence`
+  - DSL parsing for stream controls
+  - `MacroExecutor`
+- Dual-pipeline runtime synchronization:
+  - control runtime now executes against latest observation snapshot context
+- Latency profiling:
+  - telemetry phase breakdown (observation/perception/queue/execution/verification/total)
+  - CLI command `iee latency`
+- API streaming surface:
+  - `GET /stream/state`
+  - `POST /stream/control`
+  - `POST /control/start` supports observation interval tuning
 - Validation:
   - `cmake --build build --config Debug` passes
-  - `ctest --test-dir build -C Debug --output-on-failure` passes (10/10)
+  - `ctest --test-dir build -C Debug --output-on-failure` passes (`11/11`)
 
 Partially built / open for hardening:
-- API parser remains intentionally strict and flat (string-valued payload fields).
-- Control runtime executes one queued intent per cycle by design (no batch mode yet).
-- VS Code CMake Tools integration still unavailable in this environment.
+- Stream payload schema is still intentionally flat and string-valued.
+- Macro execution is deterministic but non-transactional.
+- Streaming transport is polling-oriented (no push channel yet).
+- VS Code CMake Tools helper path still fails to configure in this environment.
 
 ## 3. Last Work Done
-- Implemented and integrated `ControlRuntime` into API server lifecycle.
-- Added execution cache invalidation v2 and cumulative timeout enforcement in `ExecutionEngine`.
-- Implemented telemetry persistence queue + rotating files in `Telemetry`.
-- Added `InputAdapter` and registered it in runtime composition.
-- Extended CLI/API observability and control-plane routes.
+- Implemented environment adapter + state model and mock simulation adapter.
+- Added high-frequency observation pipeline with double buffering.
+- Integrated lightweight perception into environment capture.
+- Added macro action sequence model and executor.
+- Upgraded control runtime to dual observation/execution synchronization.
+- Added telemetry latency breakdown model + CLI latency command.
+- Added stream API endpoints and integrated sequence/queue controls.
 - Added/updated tests:
-  - `integration_control_runtime`
-  - upgraded `stress_execution_loop` to 1000-cycle percentile validation
-  - extended `integration_api_hardening` with control endpoint coverage
+  - `unit_observation_pipeline`
+  - stream-state/control and macro coverage in `integration_api_hardening`
 
 ## 4. Current Problem
-No blocking compiler/runtime defect is active in v1.2 validated scope.
+No active blocker in the validated v1.3 scope.
 
 Known non-blocking issues:
-1. API payload model is strict and string-only at top level.
-2. Control runtime queue drain is single-intent-per-frame (no batch mode).
-3. VS Code CMake Tools build/test helper remains unavailable.
+1. CMake Tools VS Code helpers remain unavailable.
+2. Stream payload parser is intentionally strict and flat.
+3. Macro execution has no rollback semantics.
 
 ## 5. Next Plan
-1. Add typed JSON payload parsing path (opt-in strict schema mode) without breaking existing flat payload clients.
-2. Add queue batching policy options for `ControlRuntime` (`maxIntentsPerCycle`).
-3. Add long-running control API soak test with persistence file rotation assertions.
-4. Improve CLI table truncation/wrapping for long labels and paths.
-5. Restore/diagnose VS Code CMake Tools integration for native build/test tasks.
+1. Add typed JSON schema mode for stream-control payloads while preserving current strict-flat compatibility.
+2. Add optional transactional macro mode (best-effort compensation hooks or dry-run verification pass).
+3. Add push-based stream transport (SSE/WebSocket) over current polling endpoints.
+4. Add long-duration soak tests for observation pipeline jitter and latency regression thresholds.
+5. Resolve VS Code CMake Tools integration gap for native build/test workflows.
 
 ## 6. Key Decisions Taken
-- Keep v1.1 public interfaces stable and ship v1.2 as additive runtime capability.
-- Enforce runtime correctness through versioned context metadata and cache-epoch invalidation.
-- Treat control loop as a first-class subsystem, not an API side effect.
-- Persist telemetry asynchronously to avoid execution-path I/O stalls.
-- Preserve deterministic behavior for fallback execution (`InputAdapter`) with explicit lower confidence weighting.
+- Keep v1.2 public/runtime behavior intact and deliver v1.3 as additive architecture.
+- Treat environment state as a first-class runtime primitive, not ad-hoc API payload assembly.
+- Keep perception lightweight and deterministic (no heavy CV/ML dependencies).
+- Separate observation and execution into synchronized pipelines for real-time safety.
+- Expose phase-level latency telemetry to make performance tuning evidence-driven.
 
 ## Multi-Agent Protocol Record
-Agents used in this v1.2 cycle:
-- Architecture agent pass: control runtime and cache/telemetry delta mapping.
-- Exploration agent pass: file/symbol integration map and risk scan.
-- Primary implementation path: core runtime, API, telemetry, adapter, tests, and docs synchronization.
+Agents used in this v1.3 cycle:
+- Architecture agent: defined environment-layer and dual-pipeline boundaries.
+- Core implementation agent: implemented C++ modules, API/CLI integration, and runtime wiring.
+- Debugging agent: diagnosed compile/type issues and test flakiness causes.
+- Refactoring agent: enforced modular contracts (`EnvironmentAdapter`, `ActionSequence`, pipeline separation).
+- Documentation agent: synchronized architecture/status/parity/issues/context docs with validated state.

@@ -6,6 +6,7 @@
 #include <memory>
 #include <string>
 
+#include "EnvironmentAdapter.h"
 #include "ControlRuntime.h"
 #include "ExecutionEngine.h"
 #include "IntentRegistry.h"
@@ -28,6 +29,7 @@ private:
     ExecutionEngine& executionEngine_;
     Telemetry& telemetry_;
     std::unique_ptr<ControlRuntime> controlRuntime_;
+    std::shared_ptr<EnvironmentAdapter> streamEnvironmentAdapter_;
     std::chrono::steady_clock::time_point startedAt_;
 };
 

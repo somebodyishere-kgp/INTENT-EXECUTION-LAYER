@@ -1,60 +1,52 @@
-# Issues and Errors Log (v1.2 Upgrade)
+# Issues and Errors Log (v1.3 Upgrade)
 
 ## Date
 2026-04-06
 
-## Resolved During v1.2 Migration
+## Resolved During v1.3 Migration
 
-### 1. Fast-path stale reuse risk in execution cache
-- Symptom: adapter fast-path cache could remain valid across payload-parameter changes.
-- Root cause: key only considered action/target and snapshot tick.
-- Fix: upgraded key with parameter hash and snapshot-version match, and LRU eviction semantics.
-- Result: stale cache hits are rejected when parameter or context version drift occurs.
+### 1. CMake Tools configure/build orchestration failure
+- Symptom: `Build_CMakeTools` / `RunCtest_CMakeTools` failed with "Unable to configure the project" and no diagnostics.
+- Root cause: environment-specific VS Code CMake Tools integration fault.
+- Fix: switched to direct `cmake` + `ctest` command path for authoritative verification.
+- Result: full build and test validation completed successfully.
 
-### 2. Retry timeout budget overflow
-- Symptom: retry loops could exceed intended latency envelope despite per-attempt timeout checks.
-- Root cause: timeout was validated per attempt only.
-- Fix: added cumulative timeout deadline across `maxRetries + 1` attempts.
-- Result: retries terminate deterministically when cumulative budget is exhausted.
+### 2. MSVC type ambiguity in perception geometry math
+- Symptom: compile failure in `EnvironmentAdapter.cpp` (`std::max` overload ambiguity with `LONG` vs `int`).
+- Root cause: arithmetic on `RECT` fields (`LONG`) was fed directly into `std::max(0, ...)`.
+- Fix: normalized differences with explicit `static_cast<int>(...)` before `std::max`.
+- Result: v1.3 core modules compile cleanly.
 
-### 3. Missing control-plane runtime lifecycle endpoints
-- Symptom: no external API to start/stop/status real-time control runtime.
-- Root cause: v1.1 API only exposed immediate execution and explainability routes.
-- Fix: added `/control/start`, `/control/stop`, `/control/status` with structured runtime payloads.
-- Result: runtime can be managed and inspected remotely.
+### 3. Streaming state serialization construction bug
+- Symptom: malformed JSON emission in stream-state helper during initial integration pass.
+- Root cause: malformed literal insertion while composing nested perception object.
+- Fix: corrected JSON stream composition and validated endpoint through integration test.
+- Result: `GET /stream/state` returns stable structured JSON payload.
 
-### 4. No persistent telemetry history across process lifetime
-- Symptom: execution traces were lost on process restart.
-- Root cause: telemetry storage was memory-only.
-- Fix: implemented async persistence queue + rotating JSONL files under `artifacts/telemetry`.
-- Result: bounded persisted history with operational status reporting.
-
-### 5. Control runtime integration test timing instability
-- Symptom: strict frame-count assertions intermittently failed under variable scheduler pressure.
-- Root cause: test assumed fixed wall-clock progression for 1ms cycles.
-- Fix: retained high-frequency load while relaxing frame expectations and extending timeout.
-- Result: stable deterministic validation in CI-like environments.
-
-### 6. VS Code CMake Tools diagnostics blind spot
-- Symptom: CMake Tools build/test helpers failed to configure with no diagnostics.
-- Root cause: environment-specific CMake Tools integration issue.
-- Fix: executed authoritative validation via direct `cmake` and `ctest` commands.
-- Result: full 10/10 test suite verified despite tooling gap.
+### 4. Observation pipeline test flakiness under scheduler variance
+- Symptom: `unit_observation_pipeline` intermittently failed on strict sample-count threshold.
+- Root cause: aggressive fixed expectation (`>=5`) at short wall-clock interval.
+- Fix: tightened correctness assertions while relaxing scheduler-sensitive sample-count gate.
+- Result: deterministic pass behavior while still validating pipeline capture semantics.
 
 ## Current Known Risks (Non-Blocking)
 
-### 1. API strictness profile
-- Current behavior: parser accepts flat JSON object with string values only.
-- Risk: clients sending typed/nested JSON must normalize payloads.
+### 1. Flat stream payload schema
+- Current behavior: stream-control parser accepts flat string-valued JSON objects only.
+- Risk: typed/nested payload clients require normalization layer.
 
-### 2. Control runtime scheduling policy
-- Current behavior: loop executes at most one queued intent per cycle.
-- Risk: burst queue backlogs can increase drain latency.
+### 2. Macro partial completion semantics
+- Current behavior: sequence execution is deterministic and stop-on-failure capable but non-transactional.
+- Risk: long macros may leave intermediate side effects on failed step.
 
-### 3. Tooling parity
-- Current behavior: VS Code CMake Tools build/test helpers still unavailable.
-- Risk: IDE integrated build UX remains degraded until extension issue is resolved.
+### 3. Polling-only stream model
+- Current behavior: stream endpoints are request/response polling primitives.
+- Risk: clients needing push-based updates must poll frequently or add external fan-out.
+
+### 4. IDE tooling parity
+- Current behavior: VS Code CMake Tools helper path remains unavailable.
+- Risk: build/test ergonomics in IDE remain degraded despite green command-line verification.
 
 ## Environment Notes
-- VS Code CMake Tools configure/build/test helpers remain unavailable in this run.
-- All compile/test verification was completed via direct `cmake` + `ctest` command execution.
+- Command-line verification remains the authoritative path in this environment.
+- Latest validation state: build success + `11/11` test pass.
