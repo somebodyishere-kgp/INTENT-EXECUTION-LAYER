@@ -226,6 +226,10 @@ int CliApp::Run(int argc, char* argv[]) {
         return HandlePerf(command);
     }
 
+    if (command.command == "vision") {
+        return HandleVision(command);
+    }
+
     CliParser::PrintHelp();
     return 1;
 }
@@ -448,7 +452,7 @@ int CliApp::HandleApi(const ParsedCommand& command) {
 
     std::cout << "Starting IEE local API on 127.0.0.1:" << port << "\n";
     std::cout << "Routes: GET /health, GET /intents, GET /capabilities, GET /control/status, "
-                 "GET /telemetry/persistence, GET /stream/state, GET /stream/live, GET /perf, "
+                 "GET /telemetry/persistence, GET /stream/state, GET /stream/frame, GET /stream/live, GET /perf, "
                  "POST /execute, POST /predict, POST /explain, POST /control/start, POST /control/stop, "
                  "POST /stream/control\n";
     if (singleRequest) {
@@ -664,6 +668,56 @@ int CliApp::HandlePerf(const ParsedCommand& command) {
     std::cout << "  within budget    : " << (contract.withinBudget ? "true" : "false") << "\n";
 
     return contract.withinBudget ? 0 : 2;
+}
+
+int CliApp::HandleVision(const ParsedCommand& command) {
+    const std::size_t limit = ReadSizeOption(command, "limit", 200U, 4096U);
+
+    if (HasOption(command, "json")) {
+        std::cout << telemetry_.SerializeVisionJson(limit) << "\n";
+        return 0;
+    }
+
+    const VisionSnapshot snapshot = telemetry_.VisionLatencySnapshot(limit);
+
+    std::cout << "Vision latency\n";
+    std::cout << "  Samples           : " << snapshot.sampleCount << "\n";
+    std::cout << "  Simulated samples : " << snapshot.simulatedSamples << "\n";
+    std::cout << "  Dropped frames    : " << snapshot.droppedFrames << "\n";
+    std::cout << "  Estimated FPS     : " << std::fixed << std::setprecision(3) << snapshot.estimatedFps << "\n";
+
+    std::cout << "\n";
+    std::cout << std::left << std::setw(12) << "PHASE"
+              << std::setw(12) << "AVG_MS"
+              << std::setw(12) << "P95_MS"
+              << "MAX_MS\n";
+    std::cout << std::string(48, '-') << "\n";
+
+    const auto printRow = [](const char* phase, const VisionComponentStats& stats) {
+        std::cout << std::left << std::setw(12) << phase
+                  << std::setw(12) << std::fixed << std::setprecision(3) << stats.averageMs
+                  << std::setw(12) << std::fixed << std::setprecision(3) << stats.p95Ms
+                  << std::fixed << std::setprecision(3) << stats.maxMs << "\n";
+    };
+
+    printRow("capture", snapshot.capture);
+    printRow("detect", snapshot.detection);
+    printRow("merge", snapshot.merge);
+    printRow("total", snapshot.total);
+
+    if (snapshot.latest.has_value()) {
+        const VisionLatencySample& latest = *snapshot.latest;
+        std::cout << "\nLatest frame\n";
+        std::cout << "  Frame ID         : " << latest.frameId << "\n";
+        std::cout << "  Env sequence     : " << latest.environmentSequence << "\n";
+        std::cout << "  Capture ms       : " << std::fixed << std::setprecision(3) << latest.captureMs << "\n";
+        std::cout << "  Detection ms     : " << std::fixed << std::setprecision(3) << latest.detectionMs << "\n";
+        std::cout << "  Merge ms         : " << std::fixed << std::setprecision(3) << latest.mergeMs << "\n";
+        std::cout << "  Total ms         : " << std::fixed << std::setprecision(3) << latest.totalMs << "\n";
+        std::cout << "  Simulated        : " << (latest.simulated ? "true" : "false") << "\n";
+    }
+
+    return 0;
 }
 
 }  // namespace iee

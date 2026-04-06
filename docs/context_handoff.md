@@ -1,103 +1,80 @@
-# IEE Context Handoff (v1.4)
+# IEE Context Handoff (v1.5)
 
 ## 1. What Are We Building
-The Intent Execution Engine (IEE): a deterministic native execution layer that converts live OS/application state into a structured intent space and executes actions through verifiable adapters. v1.4 extends v1.3 into a closed-loop decision/feedback/prediction runtime while preserving deterministic control semantics.
+The Intent Execution Engine (IEE): a deterministic native execution layer that converts live OS/application state into a structured intent space and executes actions through verifiable adapters. v1.5 extends v1.4 by adding screen perception and a unified screen state surface while preserving the existing decision/feedback/prediction runtime.
 
 ## 2. Current State
-Completed in v1.4:
-- Environment abstraction primitives:
-  - `EnvironmentAdapter`
-  - `EnvironmentState`
-  - `RegistryEnvironmentAdapter`
-  - `MockEnvironmentAdapter`
-- High-frequency observation system:
-  - `ObservationPipeline` with double-buffered state handoff
-  - pipeline metrics for sampling health and latency
-- Lightweight perception layer:
-  - dominant surface classification
-  - focus/occupancy ratios
-  - UI signature
-  - region density/focus map
-- Macro composition and execution:
-  - `ActionSequence`
-  - DSL parsing for stream controls
-  - `MacroExecutor`
-- Dual-pipeline runtime synchronization:
-  - control runtime now executes against latest observation snapshot context
-- Latency profiling:
-  - telemetry phase breakdown (observation/perception/queue/execution/verification/total)
-  - CLI command `iee latency`
-- API streaming surface:
-  - `GET /stream/state`
-  - `POST /stream/control`
-  - `POST /control/start` supports observation interval tuning
-- Decision + prediction contracts:
-  - `DecisionProvider`
-  - `Predictor`
-  - `FeedbackDelta` helpers
-- Closed-loop runtime integration:
-  - non-blocking decision worker with bounded budget
-  - feedback capture before/after each execution
-  - mismatch tracking and bounded correction enqueue
-- Macro v2:
-  - `loop` and `if_visible` branching support
-- Input timing precision:
-  - `delay_ms`, `hold_ms`, `sequence_ms`
-- New API routes:
-  - `POST /predict`
-  - `GET /perf`
-  - `GET /stream/live` (SSE push)
-- New CLI route:
-  - `iee perf`
+Completed in v1.5:
+- Screen perception primitives:
+  - `ScreenCaptureEngine` (DXGI Desktop Duplication attempt + fallback)
+  - `VisualDetector` (lightweight deterministic heuristics)
+  - `ScreenStateAssembler` (UIA + visual + cursor merge with stable IDs)
+- Environment model upgrade:
+  - `EnvironmentState` now carries `screenFrame`, `screenState`, and `visionTiming`
+- Observation pipeline upgrade:
+  - metrics now include latest frame id, vision capture/detect/merge latencies, and estimated FPS
+- Control runtime upgrade:
+  - control status now reports vision timing summaries and latest frame telemetry
+  - runtime logs per-observation vision samples into telemetry
+- Telemetry upgrade:
+  - added `VisionLatencySample` stream and aggregate `VisionSnapshot`
+  - added `SerializeVisionJson(...)`
+- API upgrade:
+  - added `GET /stream/frame` with full + delta modes
+  - bounded frame-history delta computation with `reset_required` fallback path
+  - `GET /stream/state` now returns unified screen state + vision timing
+- CLI upgrade:
+  - added `iee vision` command (table + JSON)
+- Test upgrade:
+  - added `unit_screen_perception`
+  - added `stress_screen_pipeline`
+  - extended `integration_api_hardening` for `/stream/frame`
 - Validation:
   - `cmake --build build --config Debug` passes
-  - `ctest --test-dir build -C Debug --output-on-failure` passes (`12/12`)
+  - `ctest --test-dir build -C Debug --output-on-failure` passes (`14/14`)
 
-Partially built / open for hardening:
-- Stream payload schema is still intentionally flat and string-valued.
-- Macro execution is deterministic but non-transactional.
-- SSE is now available but connection-bounded (not yet centralized push broker).
+Open for hardening (non-blocking):
+- Visual detection remains heuristic-only (no OCR/semantic model).
+- Frame delta history is bounded and can require reset on stale cursors.
+- Stream-control payload schema remains intentionally flat/string-valued.
+- Macro execution remains deterministic but non-transactional.
 - VS Code CMake Tools helper path still fails to configure in this environment.
 
 ## 3. Last Work Done
-- Added `DecisionInterfaces` with pluggable decision and prediction contracts.
-- Integrated `ControlRuntime` decision worker and feedback/correction loop.
-- Added telemetry performance-contract computation + serialization.
-- Added `iee perf` CLI command.
-- Added `/predict`, `/perf`, and `/stream/live` endpoints.
-- Upgraded macro parser/executor for Macro v2 (`loop`, `if_visible`, else-branch).
-- Added input timing precision path in `InputAdapter`.
-- Added/updated tests:
-  - new `integration_closed_loop_feedback`
-  - expanded `integration_api_hardening` with v1.4 endpoint and macro-v2 coverage
+- Added `core/execution/include/ScreenPerception.h` + `core/execution/src/ScreenPerception.cpp`.
+- Extended environment and observation contracts for unified screen state.
+- Added telemetry vision aggregation and JSON serialization.
+- Added `/stream/frame` API route with delta support.
+- Added `iee vision` CLI command.
+- Added v1.5 tests and updated CMake test registrations.
+- Synchronized docs: architecture/status/parity/issues/context + README + repository about metadata text.
 
 ## 4. Current Problem
-No active blocker in the validated v1.4 scope.
+No active blocker in the validated v1.5 scope.
 
 Known non-blocking issues:
-1. CMake Tools VS Code helpers remain unavailable.
-2. Stream payload parser is intentionally strict and flat.
-3. Macro execution has no rollback semantics.
+1. VS Code CMake Tools helpers remain unavailable in this environment.
+2. Visual detection is intentionally lightweight and heuristic.
+3. Frame delta history is bounded and reset-driven for stale cursors.
 
 ## 5. Next Plan
-1. Add typed/nested JSON schema mode for stream-control and prediction payloads while preserving current flat compatibility.
-2. Add optional transactional macro mode (compensation hooks or dry-run verification pass).
-3. Extend SSE from bounded sessions to long-lived brokered fan-out.
-4. Add long-duration soak tests for feedback correction stability and jitter budgets.
+1. Add optional richer visual analyzers (still deterministic and bounded) for stronger text/semantic cues.
+2. Add explicit client cursor/token contract for long-lived frame-delta synchronization.
+3. Add long-duration soak tests for frame-stream delta stability under bursty UI changes.
+4. Add typed/nested payload mode for stream-control while preserving flat compatibility.
 5. Resolve VS Code CMake Tools integration gap for native build/test workflows.
 
 ## 6. Key Decisions Taken
-- Keep v1.3 public/runtime behavior intact and deliver v1.4 as additive architecture.
-- Treat environment state as a first-class runtime primitive, not ad-hoc API payload assembly.
-- Keep perception lightweight and deterministic (no heavy CV/ML dependencies).
-- Separate observation and execution into synchronized pipelines for real-time safety.
-- Expose phase-level latency telemetry and contract metrics to make performance tuning evidence-driven.
-- Keep decision/prediction as optional plugin contracts; no embedded AI stack in core runtime.
+- Keep v1.4 public/runtime behavior intact and deliver v1.5 as additive architecture.
+- Keep perception deterministic and lightweight; no heavy ML/CV runtime dependencies.
+- Treat unified `ScreenState` as a first-class runtime artifact, not just a transport payload.
+- Keep frame streaming deterministic with bounded history and explicit reset behavior.
+- Expose vision latency as a first-class telemetry channel and CLI/API surface.
 
 ## Multi-Agent Protocol Record
-Agents used in this v1.4 cycle:
-- Architecture agent: defined environment-layer and dual-pipeline boundaries.
-- Core implementation agent: implemented runtime decision/feedback/prediction, API/CLI, and test updates.
-- Debugging agent: diagnosed compile/type integration issues and endpoint behavior edge cases.
-- Refactoring agent: enforced modular plugin contracts and bounded runtime behavior.
-- Documentation agent: synchronized architecture/status/parity/issues/context docs with validated v1.4 state.
+Agents used in this v1.5 cycle:
+- Architecture agent: defined screen perception boundaries and merge contracts.
+- Core implementation agent: integrated capture/detect/merge into runtime/API/CLI.
+- Debugging agent: identified compile and host-performance threshold issues.
+- Refactoring agent: validated modular boundaries and bounded history design.
+- Documentation agent: synchronized architecture/status/parity/issues/context/README artifacts.

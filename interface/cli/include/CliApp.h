@@ -24,6 +24,7 @@ private:
     int HandleTrace(const ParsedCommand& command);
     int HandleLatency(const ParsedCommand& command);
     int HandlePerf(const ParsedCommand& command);
+    int HandleVision(const ParsedCommand& command);
 
     IntentRegistry& intentRegistry_;
     ExecutionEngine& executionEngine_;

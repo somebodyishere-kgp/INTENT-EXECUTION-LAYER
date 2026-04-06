@@ -118,6 +118,20 @@ int main() {
         }
 
         {
+            const std::string response = api.HandleRequestForTesting(BuildHttpRequest("GET", "/stream/frame"));
+            AssertTrue(HasStatus(response, 200), "GET /stream/frame should return 200");
+            AssertTrue(response.find("\"mode\":\"full\"") != std::string::npos, "Stream frame response should default to full mode");
+            AssertTrue(response.find("\"state\"") != std::string::npos, "Stream frame response should include full screen state");
+        }
+
+        {
+            const std::string response = api.HandleRequestForTesting(BuildHttpRequest("GET", "/stream/frame?mode=delta"));
+            AssertTrue(HasStatus(response, 200), "GET /stream/frame?mode=delta should return 200");
+            AssertTrue(response.find("\"mode\":\"delta\"") != std::string::npos, "Delta stream frame response should identify delta mode");
+            AssertTrue(response.find("\"delta\"") != std::string::npos, "Delta stream frame response should include delta payload");
+        }
+
+        {
             const std::string response = api.HandleRequestForTesting(BuildHttpRequest("GET", "/stream/live?events=3&interval_ms=50"));
             AssertTrue(HasStatus(response, 200), "GET /stream/live should return 200 in test mode");
             AssertTrue(response.find("\"transport\":\"sse\"") != std::string::npos, "Live stream response should identify SSE transport");

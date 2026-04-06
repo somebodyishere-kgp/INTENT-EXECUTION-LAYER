@@ -7,6 +7,7 @@
 #include <array>
 #include <atomic>
 #include <charconv>
+#include <cmath>
 #include <limits>
 #include <map>
 #include <set>
@@ -355,6 +356,167 @@ std::int64_t EpochMs(std::chrono::system_clock::time_point timePoint) {
         std::chrono::duration_cast<std::chrono::milliseconds>(timePoint.time_since_epoch()).count());
 }
 
+std::string SerializeRectJson(const RECT& rect) {
+    std::ostringstream json;
+    json << "{";
+    json << "\"left\":" << rect.left << ",";
+    json << "\"top\":" << rect.top << ",";
+    json << "\"right\":" << rect.right << ",";
+    json << "\"bottom\":" << rect.bottom;
+    json << "}";
+    return json.str();
+}
+
+std::string SerializeVisualElementJson(const VisualElement& element) {
+    std::ostringstream json;
+    json << "{";
+    json << "\"id\":\"" << EscapeJson(element.id) << "\",";
+    json << "\"kind\":\"" << EscapeJson(element.kind) << "\",";
+    json << "\"bounds\":" << SerializeRectJson(element.bounds) << ",";
+    json << "\"color_cluster\":" << element.colorCluster << ",";
+    json << "\"edge_density\":" << element.edgeDensity << ",";
+    json << "\"text_like\":" << (element.textLike ? "true" : "false") << ",";
+    json << "\"confidence\":" << element.confidence;
+    json << "}";
+    return json.str();
+}
+
+std::string SerializeScreenElementJson(const ScreenElement& element) {
+    std::ostringstream json;
+    json << "{";
+    json << "\"id\":\"" << EscapeJson(element.id) << "\",";
+    json << "\"source\":\"" << EscapeJson(element.source) << "\",";
+    json << "\"ui_element_id\":\"" << EscapeJson(element.uiElementId) << "\",";
+    json << "\"label\":\"" << EscapeJson(Narrow(element.label)) << "\",";
+    json << "\"bounds\":" << SerializeRectJson(element.bounds) << ",";
+    json << "\"confidence\":" << element.confidence << ",";
+    json << "\"focused\":" << (element.focused ? "true" : "false") << ",";
+    json << "\"text_like\":" << (element.textLike ? "true" : "false");
+    json << "}";
+    return json.str();
+}
+
+std::string SerializeScreenStateJson(const ScreenState& state) {
+    std::ostringstream json;
+    json << "{";
+    json << "\"frame_id\":" << state.frameId << ",";
+    json << "\"environment_sequence\":" << state.environmentSequence << ",";
+    json << "\"captured_at_ms\":" << EpochMs(state.capturedAt) << ",";
+    json << "\"width\":" << state.width << ",";
+    json << "\"height\":" << state.height << ",";
+    json << "\"signature\":" << state.signature << ",";
+    json << "\"simulated\":" << (state.simulated ? "true" : "false") << ",";
+    json << "\"valid\":" << (state.valid ? "true" : "false") << ",";
+    json << "\"cursor\":{";
+    json << "\"x\":" << state.cursorPosition.x << ",";
+    json << "\"y\":" << state.cursorPosition.y;
+    json << "},";
+    json << "\"visual_elements\":[";
+    for (std::size_t index = 0; index < state.visualElements.size(); ++index) {
+        if (index > 0) {
+            json << ",";
+        }
+        json << SerializeVisualElementJson(state.visualElements[index]);
+    }
+    json << "],";
+    json << "\"elements\":[";
+    for (std::size_t index = 0; index < state.elements.size(); ++index) {
+        if (index > 0) {
+            json << ",";
+        }
+        json << SerializeScreenElementJson(state.elements[index]);
+    }
+    json << "]";
+    json << "}";
+    return json.str();
+}
+
+bool ScreenElementEquivalent(const ScreenElement& left, const ScreenElement& right) {
+    const auto sameRect = left.bounds.left == right.bounds.left &&
+        left.bounds.top == right.bounds.top &&
+        left.bounds.right == right.bounds.right &&
+        left.bounds.bottom == right.bounds.bottom;
+
+    return sameRect &&
+        left.source == right.source &&
+        left.uiElementId == right.uiElementId &&
+        left.label == right.label &&
+        std::abs(left.confidence - right.confidence) < 0.0001 &&
+        left.focused == right.focused &&
+        left.textLike == right.textLike;
+}
+
+std::string SerializeScreenDeltaJson(const ScreenState& base, const ScreenState& current, bool* changedOut) {
+    std::unordered_map<std::string, ScreenElement> baseById;
+    baseById.reserve(base.elements.size());
+    for (const ScreenElement& element : base.elements) {
+        baseById[element.id] = element;
+    }
+
+    std::unordered_map<std::string, ScreenElement> currentById;
+    currentById.reserve(current.elements.size());
+    for (const ScreenElement& element : current.elements) {
+        currentById[element.id] = element;
+    }
+
+    std::vector<ScreenElement> added;
+    std::vector<ScreenElement> updated;
+    std::vector<std::string> removed;
+
+    for (const auto& entry : currentById) {
+        const auto it = baseById.find(entry.first);
+        if (it == baseById.end()) {
+            added.push_back(entry.second);
+            continue;
+        }
+
+        if (!ScreenElementEquivalent(it->second, entry.second)) {
+            updated.push_back(entry.second);
+        }
+    }
+
+    for (const auto& entry : baseById) {
+        if (currentById.find(entry.first) == currentById.end()) {
+            removed.push_back(entry.first);
+        }
+    }
+
+    const bool changed = !added.empty() || !updated.empty() || !removed.empty();
+    if (changedOut != nullptr) {
+        *changedOut = changed;
+    }
+
+    std::ostringstream json;
+    json << "{";
+    json << "\"changed\":" << (changed ? "true" : "false") << ",";
+    json << "\"added\":[";
+    for (std::size_t index = 0; index < added.size(); ++index) {
+        if (index > 0) {
+            json << ",";
+        }
+        json << SerializeScreenElementJson(added[index]);
+    }
+    json << "],";
+    json << "\"updated\":[";
+    for (std::size_t index = 0; index < updated.size(); ++index) {
+        if (index > 0) {
+            json << ",";
+        }
+        json << SerializeScreenElementJson(updated[index]);
+    }
+    json << "],";
+    json << "\"removed\":[";
+    for (std::size_t index = 0; index < removed.size(); ++index) {
+        if (index > 0) {
+            json << ",";
+        }
+        json << "\"" << EscapeJson(removed[index]) << "\"";
+    }
+    json << "]";
+    json << "}";
+    return json.str();
+}
+
 std::string SerializeEnvironmentStateJson(const EnvironmentState& state) {
     std::ostringstream json;
     json << "{";
@@ -395,6 +557,13 @@ std::string SerializeEnvironmentStateJson(const EnvironmentState& state) {
     }
 
     json << "]";
+    json << "},";
+    json << "\"screen_state\":" << SerializeScreenStateJson(state.screenState) << ",";
+    json << "\"vision_timing\":{";
+    json << "\"capture_ms\":" << state.visionTiming.captureMs << ",";
+    json << "\"detection_ms\":" << state.visionTiming.detectionMs << ",";
+    json << "\"merge_ms\":" << state.visionTiming.mergeMs << ",";
+    json << "\"total_ms\":" << state.visionTiming.totalMs;
     json << "}";
     json << "}";
     return json.str();
@@ -1067,11 +1236,165 @@ std::string IntentApiServer::HandleRequest(const std::string& request) {
             state.perception = LightweightPerception::Analyze(state);
         }
 
+        if (!state.screenFrame.valid) {
+            state.screenFrame.frameId = state.sequence;
+            state.screenFrame.capturedAt = state.capturedAt;
+            state.screenFrame.width = std::max(1, GetSystemMetrics(SM_CXSCREEN));
+            state.screenFrame.height = std::max(1, GetSystemMetrics(SM_CYSCREEN));
+            state.screenFrame.simulated = true;
+            state.screenFrame.valid = true;
+        }
+
+        if (!state.screenState.valid || state.screenState.frameId == 0) {
+            const std::vector<VisualElement> visual = VisualDetector::Detect(state.screenFrame, state.uiElements);
+            state.screenState = ScreenStateAssembler::Build(
+                state.sequence,
+                state.capturedAt,
+                state.cursorPosition,
+                state.uiElements,
+                state.screenFrame,
+                visual);
+        }
+
         std::ostringstream json;
         json << "{";
         json << "\"runtime_active\":" << (runtimeActive ? "true" : "false") << ",";
         json << "\"state\":" << SerializeEnvironmentStateJson(state) << ",";
         json << "\"latency\":" << telemetry_.SerializeLatencyJson(200);
+        if (runtimeActive) {
+            json << ",\"control_status\":" << ControlRuntime::SerializeSnapshotJson(controlRuntime_->Status());
+        }
+        json << "}";
+
+        return BuildResponse(200, "OK", json.str());
+    }
+
+    if (method == "GET" && path == "/stream/frame") {
+        const bool runtimeActive = controlRuntime_ != nullptr && controlRuntime_->Status().active;
+
+        EnvironmentState state;
+        bool captured = false;
+        if (runtimeActive) {
+            captured = controlRuntime_->LatestEnvironmentState(&state);
+        }
+
+        if (!captured && streamEnvironmentAdapter_ != nullptr) {
+            std::string captureError;
+            captured = streamEnvironmentAdapter_->CaptureState(&state, &captureError);
+        }
+
+        if (!captured) {
+            return BuildErrorResponse(503, "Service Unavailable", "stream_frame_unavailable", "Unable to capture screen state");
+        }
+
+        if (!state.screenFrame.valid) {
+            state.screenFrame.frameId = state.sequence;
+            state.screenFrame.capturedAt = state.capturedAt;
+            state.screenFrame.width = std::max(1, GetSystemMetrics(SM_CXSCREEN));
+            state.screenFrame.height = std::max(1, GetSystemMetrics(SM_CYSCREEN));
+            state.screenFrame.simulated = true;
+            state.screenFrame.valid = true;
+        }
+        if (state.screenFrame.frameId == 0) {
+            state.screenFrame.frameId = state.sequence;
+        }
+
+        if (!state.screenState.valid || state.screenState.frameId == 0) {
+            const std::vector<VisualElement> visual = VisualDetector::Detect(state.screenFrame, state.uiElements);
+            state.screenState = ScreenStateAssembler::Build(
+                state.sequence,
+                state.capturedAt,
+                state.cursorPosition,
+                state.uiElements,
+                state.screenFrame,
+                visual);
+        }
+
+        if (state.screenState.environmentSequence == 0) {
+            state.screenState.environmentSequence = state.sequence;
+        }
+
+        VisionLatencySample visionSample;
+        visionSample.frameId = state.screenState.frameId;
+        visionSample.environmentSequence = state.screenState.environmentSequence;
+        visionSample.captureMs = static_cast<double>(state.visionTiming.captureMs);
+        visionSample.detectionMs = static_cast<double>(state.visionTiming.detectionMs);
+        visionSample.mergeMs = static_cast<double>(state.visionTiming.mergeMs);
+        visionSample.totalMs = static_cast<double>(state.visionTiming.totalMs);
+        visionSample.simulated = state.screenState.simulated;
+        visionSample.timestamp = state.screenState.capturedAt;
+        telemetry_.LogVisionSample(visionSample);
+
+        const auto modeIt = query.find("mode");
+        const std::string mode = modeIt == query.end() ? "full" : ToAsciiLower(modeIt->second);
+        const bool deltaMode = mode == "delta";
+
+        std::uint64_t sinceFrameId = 0;
+        const auto sinceIt = query.find("since");
+        if (sinceIt != query.end()) {
+            ParseUint64(sinceIt->second, &sinceFrameId);
+        }
+
+        ScreenState baseFrame;
+        bool hasBaseFrame = false;
+
+        {
+            std::lock_guard<std::mutex> lock(frameHistoryMutex_);
+
+            if (sinceFrameId > 0) {
+                for (auto it = frameHistory_.rbegin(); it != frameHistory_.rend(); ++it) {
+                    if (it->frameId == sinceFrameId) {
+                        baseFrame = *it;
+                        hasBaseFrame = true;
+                        break;
+                    }
+                }
+            } else if (deltaMode && !frameHistory_.empty()) {
+                baseFrame = frameHistory_.back();
+                hasBaseFrame = true;
+            }
+
+            if (frameHistory_.empty() || frameHistory_.back().frameId != state.screenState.frameId) {
+                frameHistory_.push_back(state.screenState);
+                while (frameHistory_.size() > 128U) {
+                    frameHistory_.pop_front();
+                }
+            }
+        }
+
+        std::ostringstream json;
+        json << "{";
+        json << "\"runtime_active\":" << (runtimeActive ? "true" : "false") << ",";
+        json << "\"frame_id\":" << state.screenState.frameId << ",";
+        json << "\"signature\":" << state.screenState.signature << ",";
+        json << "\"mode\":\"" << (deltaMode ? "delta" : "full") << "\",";
+
+        if (!deltaMode) {
+            json << "\"state\":" << SerializeScreenStateJson(state.screenState) << ",";
+        } else {
+            json << "\"since\":" << sinceFrameId << ",";
+
+            if (sinceFrameId == state.screenState.frameId && sinceFrameId != 0) {
+                json << "\"delta\":{\"changed\":false,\"added\":[],\"updated\":[],\"removed\":[]},";
+            } else if (hasBaseFrame) {
+                bool changed = false;
+                const std::string deltaJson = SerializeScreenDeltaJson(baseFrame, state.screenState, &changed);
+                json << "\"delta\":" << deltaJson << ",";
+                json << "\"reset_required\":false,";
+            } else if (sinceFrameId > 0) {
+                json << "\"delta\":{\"changed\":true,\"added\":[],\"updated\":[],\"removed\":[]},";
+                json << "\"reset_required\":true,";
+                json << "\"state\":" << SerializeScreenStateJson(state.screenState) << ",";
+            } else {
+                const ScreenState emptyBase;
+                bool changed = false;
+                const std::string deltaJson = SerializeScreenDeltaJson(emptyBase, state.screenState, &changed);
+                json << "\"delta\":" << deltaJson << ",";
+                json << "\"reset_required\":false,";
+            }
+        }
+
+        json << "\"vision\":" << telemetry_.SerializeVisionJson(200);
         if (runtimeActive) {
             json << ",\"control_status\":" << ControlRuntime::SerializeSnapshotJson(controlRuntime_->Status());
         }

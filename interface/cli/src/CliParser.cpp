@@ -54,6 +54,7 @@ void CliParser::PrintHelp() {
     std::cout << "  iee telemetry --persistence [--json]\n";
     std::cout << "  iee latency [--json] [--limit <N>]\n";
     std::cout << "  iee perf [--json] [--target_ms <MS>] [--limit <N>]\n";
+    std::cout << "  iee vision [--json] [--limit <N>]\n";
     std::cout << "  iee trace [<trace_id>] [--limit <N>]\n";
     std::cout << "  iee api [--port 8787] [--once]\n";
     std::cout << "  iee execute move --path \"file.txt\" --destination \"docs/\"\n";

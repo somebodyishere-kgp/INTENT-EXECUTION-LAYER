@@ -56,10 +56,16 @@ int main() {
         AssertTrue(latest.valid, "Latest state should be valid");
         AssertTrue(latest.sequence >= 1, "Latest sequence should advance");
         AssertTrue(!latest.perception.dominantSurface.empty(), "Perception should be computed");
+        AssertTrue(latest.screenState.valid, "Unified screen state should be populated");
+        AssertTrue(latest.screenState.frameId > 0, "Unified screen state should include frame id");
 
         const iee::ObservationPipelineMetrics metrics = pipeline.Metrics();
         AssertTrue(metrics.samples >= 1, "Expected observation pipeline to capture at least one sample");
         AssertTrue(metrics.captureFailures == 0, "Expected no observation capture failures");
+        AssertTrue(metrics.latestFrameId > 0, "Observation metrics should expose latest frame id");
+        AssertTrue(metrics.averageVisionCaptureMs >= 0.0, "Observation metrics should expose vision capture latency");
+        AssertTrue(metrics.averageVisionDetectionMs >= 0.0, "Observation metrics should expose vision detection latency");
+        AssertTrue(metrics.averageVisionMergeMs >= 0.0, "Observation metrics should expose vision merge latency");
 
         pipeline.Stop();
         AssertTrue(!pipeline.Running(), "Observation pipeline should stop cleanly");

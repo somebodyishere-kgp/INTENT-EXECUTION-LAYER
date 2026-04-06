@@ -136,6 +136,27 @@ LatencyComponentStats BuildLatencyStats(std::vector<double> values) {
     return stats;
 }
 
+VisionComponentStats BuildVisionStats(std::vector<double> values) {
+    VisionComponentStats stats;
+    if (values.empty()) {
+        return stats;
+    }
+
+    double sum = 0.0;
+    for (double value : values) {
+        sum += value;
+        if (value > stats.maxMs) {
+            stats.maxMs = value;
+        }
+    }
+    stats.averageMs = sum / static_cast<double>(values.size());
+
+    std::sort(values.begin(), values.end());
+    const std::size_t index = ((values.size() - 1U) * 95U) / 100U;
+    stats.p95Ms = values[index];
+    return stats;
+}
+
 double PercentileValue(const std::vector<double>& sortedValues, std::size_t percentile) {
     if (sortedValues.empty()) {
         return 0.0;
@@ -274,6 +295,26 @@ void Telemetry::LogLatencyBreakdown(const LatencyBreakdownSample& sample) {
     latencyBreakdowns_.push_back(sample);
     if (latencyBreakdowns_.size() > kMaxLatencySamples) {
         latencyBreakdowns_.pop_front();
+    }
+}
+
+void Telemetry::LogVisionSample(const VisionLatencySample& sample) {
+    std::lock_guard<std::mutex> lock(mutex_);
+
+    if (sample.frameId > 0 && latestVisionFrameId_ > 0 && sample.frameId > latestVisionFrameId_ + 1U) {
+        visionDroppedFrames_ += (sample.frameId - latestVisionFrameId_ - 1U);
+    }
+    if (sample.frameId > latestVisionFrameId_) {
+        latestVisionFrameId_ = sample.frameId;
+    }
+
+    visionSamples_.push_back(sample);
+    if (visionSamples_.size() > kMaxVisionSamples) {
+        visionSamples_.pop_front();
+    }
+
+    if (sample.simulated) {
+        ++visionSimulatedSamples_;
     }
 }
 
@@ -498,6 +539,71 @@ PerformanceContractSnapshot Telemetry::PerformanceContract(double targetBudgetMs
     return snapshot;
 }
 
+VisionSnapshot Telemetry::VisionLatencySnapshot(std::size_t limit) const {
+    VisionSnapshot snapshot;
+
+    std::vector<double> captureValues;
+    std::vector<double> detectionValues;
+    std::vector<double> mergeValues;
+    std::vector<double> totalValues;
+    std::size_t simulatedCount = 0;
+    std::chrono::system_clock::time_point firstTimestamp;
+    std::chrono::system_clock::time_point lastTimestamp;
+
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+
+        const std::size_t cappedLimit = std::max<std::size_t>(1U, limit);
+        const std::size_t start = visionSamples_.size() > cappedLimit ? visionSamples_.size() - cappedLimit : 0U;
+        const std::size_t count = visionSamples_.size() - start;
+
+        snapshot.sampleCount = count;
+        snapshot.droppedFrames = visionDroppedFrames_;
+
+        captureValues.reserve(count);
+        detectionValues.reserve(count);
+        mergeValues.reserve(count);
+        totalValues.reserve(count);
+
+        for (std::size_t index = start; index < visionSamples_.size(); ++index) {
+            const VisionLatencySample& sample = visionSamples_[index];
+            captureValues.push_back(sample.captureMs);
+            detectionValues.push_back(sample.detectionMs);
+            mergeValues.push_back(sample.mergeMs);
+            totalValues.push_back(sample.totalMs);
+
+            if (sample.simulated) {
+                ++simulatedCount;
+            }
+
+            if (index == start) {
+                firstTimestamp = sample.timestamp;
+            }
+            lastTimestamp = sample.timestamp;
+        }
+
+        if (!visionSamples_.empty()) {
+            snapshot.latest = visionSamples_.back();
+        }
+    }
+
+    snapshot.simulatedSamples = static_cast<std::uint64_t>(simulatedCount);
+    snapshot.capture = BuildVisionStats(std::move(captureValues));
+    snapshot.detection = BuildVisionStats(std::move(detectionValues));
+    snapshot.merge = BuildVisionStats(std::move(mergeValues));
+    snapshot.total = BuildVisionStats(std::move(totalValues));
+
+    if (snapshot.sampleCount >= 2 && lastTimestamp > firstTimestamp) {
+        const auto spanMs = std::chrono::duration_cast<std::chrono::milliseconds>(lastTimestamp - firstTimestamp).count();
+        if (spanMs > 0) {
+            snapshot.estimatedFps =
+                (static_cast<double>(snapshot.sampleCount - 1U) * 1000.0) / static_cast<double>(spanMs);
+        }
+    }
+
+    return snapshot;
+}
+
 std::string Telemetry::SerializeSnapshotJson() const {
     const TelemetrySnapshot snapshot = Snapshot();
 
@@ -628,6 +734,50 @@ std::string Telemetry::SerializePerformanceContractJson(double targetBudgetMs, s
     stream << "\"jitter_ms\":" << std::fixed << std::setprecision(3) << contract.jitterMs << ",";
     stream << "\"drift_ms\":" << std::fixed << std::setprecision(3) << contract.driftMs << ",";
     stream << "\"within_budget\":" << (contract.withinBudget ? "true" : "false");
+    stream << "}";
+    return stream.str();
+}
+
+std::string Telemetry::SerializeVisionJson(std::size_t limit) const {
+    const VisionSnapshot snapshot = VisionLatencySnapshot(limit);
+
+    std::ostringstream stream;
+    stream << "{";
+    stream << "\"sample_count\":" << snapshot.sampleCount << ",";
+    stream << "\"simulated_samples\":" << snapshot.simulatedSamples << ",";
+    stream << "\"dropped_frames\":" << snapshot.droppedFrames << ",";
+    stream << "\"estimated_fps\":" << std::fixed << std::setprecision(3) << snapshot.estimatedFps << ",";
+
+    const auto appendComponent = [](std::ostringstream* out, const char* name, const VisionComponentStats& stats, bool leadingComma) {
+        if (leadingComma) {
+            *out << ",";
+        }
+        *out << "\"" << name << "\":{";
+        *out << "\"avg_ms\":" << std::fixed << std::setprecision(3) << stats.averageMs << ",";
+        *out << "\"p95_ms\":" << std::fixed << std::setprecision(3) << stats.p95Ms << ",";
+        *out << "\"max_ms\":" << std::fixed << std::setprecision(3) << stats.maxMs;
+        *out << "}";
+    };
+
+    appendComponent(&stream, "capture", snapshot.capture, true);
+    appendComponent(&stream, "detection", snapshot.detection, true);
+    appendComponent(&stream, "merge", snapshot.merge, true);
+    appendComponent(&stream, "total", snapshot.total, true);
+
+    if (snapshot.latest.has_value()) {
+        const VisionLatencySample& latest = *snapshot.latest;
+        stream << ",\"latest\":{";
+        stream << "\"frame_id\":" << latest.frameId << ",";
+        stream << "\"environment_sequence\":" << latest.environmentSequence << ",";
+        stream << "\"capture_ms\":" << std::fixed << std::setprecision(3) << latest.captureMs << ",";
+        stream << "\"detection_ms\":" << std::fixed << std::setprecision(3) << latest.detectionMs << ",";
+        stream << "\"merge_ms\":" << std::fixed << std::setprecision(3) << latest.mergeMs << ",";
+        stream << "\"total_ms\":" << std::fixed << std::setprecision(3) << latest.totalMs << ",";
+        stream << "\"simulated\":" << (latest.simulated ? "true" : "false") << ",";
+        stream << "\"timestamp_ms\":" << EpochMs(latest.timestamp);
+        stream << "}";
+    }
+
     stream << "}";
     return stream.str();
 }

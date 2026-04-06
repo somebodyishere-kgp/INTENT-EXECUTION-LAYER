@@ -3,6 +3,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <deque>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -36,6 +37,8 @@ private:
     mutable std::mutex predictorMutex_;
     std::shared_ptr<Predictor> predictor_;
     std::chrono::steady_clock::time_point startedAt_;
+    mutable std::mutex frameHistoryMutex_;
+    std::deque<ScreenState> frameHistory_;
 };
 
 }  // namespace iee

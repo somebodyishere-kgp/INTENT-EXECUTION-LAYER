@@ -32,6 +32,17 @@ int main() {
 
         telemetry.LogResolutionTiming(std::chrono::milliseconds(3));
 
+        iee::VisionLatencySample visionSample;
+        visionSample.frameId = 12;
+        visionSample.environmentSequence = 4;
+        visionSample.captureMs = 2.0;
+        visionSample.detectionMs = 1.0;
+        visionSample.mergeMs = 1.0;
+        visionSample.totalMs = 4.0;
+        visionSample.simulated = false;
+        visionSample.timestamp = std::chrono::system_clock::now();
+        telemetry.LogVisionSample(visionSample);
+
         const iee::TelemetrySnapshot snapshot = telemetry.Snapshot();
         AssertTrue(snapshot.totalExecutions == 1, "Expected one execution sample");
         AssertTrue(snapshot.successCount == 1, "Expected one success sample");
@@ -48,6 +59,13 @@ int main() {
 
         const std::string traceJson = telemetry.SerializeTraceJson(traceId);
         AssertTrue(traceJson.find(traceId) != std::string::npos, "Trace JSON should include trace id");
+
+        const iee::VisionSnapshot visionSnapshot = telemetry.VisionLatencySnapshot(16);
+        AssertTrue(visionSnapshot.sampleCount == 1, "Expected one vision telemetry sample");
+        AssertTrue(visionSnapshot.latest.has_value(), "Expected latest vision sample");
+
+        const std::string visionJson = telemetry.SerializeVisionJson(16);
+        AssertTrue(visionJson.find("\"capture\"") != std::string::npos, "Vision JSON should include capture metrics");
 
         std::cout << "unit_telemetry: PASS\n";
         return 0;

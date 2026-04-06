@@ -24,48 +24,31 @@ This repository now includes:
 - IEE v1.2: control runtime, cache invalidation v2, persisted telemetry
 - IEE v1.3: environment-aware real-time control
 - IEE v1.4: decision + feedback + prediction layer
+- IEE v1.5: screen perception + unified screen state
 
-## v1.4 Highlights
+## v1.5 Highlights
 
-- Environment abstraction:
-  - `EnvironmentAdapter`
-  - `EnvironmentState`
-  - live and mock adapters
-- High-frequency observation pipeline:
-  - dedicated thread
-  - double-buffer state handoff
-- Lightweight perception primitives:
-  - dominant surface classification
-  - focus/occupancy ratios
-  - UI region density/focus
-- Macro control composition:
-  - ordered `ActionSequence`
-  - compact DSL parsing
-- Dual synchronized pipelines:
-  - observation lane + execution lane
-- Latency phase profiling:
-  - observation/perception/queue/execution/verification/total
-- Streaming API:
-  - `GET /stream/state`
-  - `POST /stream/control`
-- Decision and prediction interfaces:
-  - `DecisionProvider` (optional, bounded, non-blocking runtime integration)
-  - `Predictor` hook + `POST /predict`
-- Closed-loop feedback:
-  - before/after environment capture
-  - deterministic feedback delta and mismatch detection
-  - bounded correction enqueue path
-- Input timing precision:
-  - `delay_ms`, `hold_ms`, `sequence_ms`
-  - key/mouse hold timing support in `InputAdapter`
-- Macro v2 control flow:
-  - `loop` steps
-  - `if_visible` conditional branch with optional else expression
-- Push stream transport:
-  - `GET /stream/live` (SSE)
-- Performance contract exposure:
-  - `GET /perf`
-  - `iee perf`
+- Unified screen perception layer:
+  - `ScreenCaptureEngine` with DXGI Desktop Duplication first path
+  - deterministic fallback when duplication is unavailable
+  - `VisualDetector` heuristics (edge/segment/color/text-like cues)
+  - `ScreenStateAssembler` merge of UIA + visual + cursor with stable IDs
+- Environment/runtime upgrade:
+  - `EnvironmentState` now includes `screenFrame`, `screenState`, and `visionTiming`
+  - observation metrics now include latest frame id and vision timing summaries
+  - control runtime status now includes vision timing and observation FPS
+- Frame streaming API:
+  - `GET /stream/frame` for full or delta frame state transport
+  - bounded history with reset signaling for stale delta cursors
+- Vision telemetry:
+  - capture/detection/merge/total latency aggregation
+  - dropped/simulated frame accounting
+  - `iee vision` CLI command
+- v1.4 capabilities retained:
+  - decision + feedback + prediction surfaces
+  - macro v2 control flow (`loop`, `if_visible`)
+  - performance contract (`GET /perf`, `iee perf`)
+  - live SSE stream (`GET /stream/live`)
 
 ## Architecture
 
@@ -76,11 +59,17 @@ Observer -> Intent Registry ---------> Execution Engine -> Adapter Runtime
   +------> Environment Adapter -> Observation Pipeline -> Control Runtime
                        |            |         |         \
                        |            |         |          -> Feedback + Corrections
-                       +------> Perception ---+          -> Decision Provider (optional)
+                       |            |         +----------> Decision Provider (optional)
+                       |            v
+                       |      Screen Capture (DXGI/fallback)
+                       |            |
+                       |      Visual Detector
+                       |            |
+                       +----> Unified ScreenState (UIA + visual + cursor)
 
 Predictor hook -> /predict and runtime prediction surfaces
 
-Telemetry <---------------- traces + latency breakdowns + persistence
+Telemetry <---------------- traces + latency breakdowns + vision metrics + persistence
 ```
 
 ## Repository Structure
@@ -143,6 +132,10 @@ ctest --test-dir build -C Debug --output-on-failure
 ./build/Debug/iee.exe perf
 ./build/Debug/iee.exe perf --json --target_ms 12 --limit 300
 
+# vision pipeline metrics
+./build/Debug/iee.exe vision
+./build/Debug/iee.exe vision --json --limit 300
+
 # recent traces or a specific trace
 ./build/Debug/iee.exe trace
 ./build/Debug/iee.exe trace --id <trace_id>
@@ -166,6 +159,7 @@ Available routes:
 - `GET /telemetry/persistence`
 - `GET /control/status`
 - `GET /stream/state`
+- `GET /stream/frame`
 - `GET /stream/live`
 - `GET /perf`
 - `POST /execute`
@@ -190,6 +184,12 @@ Example stream-control macro payload:
 {
 	"sequence": "create|macro_a.txt;move|macro_a.txt|macro_b.txt;delete|macro_b.txt"
 }
+```
+
+Example frame stream query:
+
+```text
+GET /stream/frame?mode=delta&since=42
 ```
 
 Example prediction payload:
@@ -224,6 +224,8 @@ Key validations include:
 - API hardening under malformed payloads
 - high-frequency execution latency distribution
 - observation pipeline behavior
+- unified screen-state capture/detect/merge behavior
+- frame stream full/delta API behavior
 - stream state/control and macro execution paths
 - live SSE stream route and performance contract endpoint
 - closed-loop decision/feedback/correction behavior
@@ -245,6 +247,16 @@ Primary docs:
 - [docs/parity.md](docs/parity.md)
 - [docs/issues_and_errors.md](docs/issues_and_errors.md)
 - [docs/context_handoff.md](docs/context_handoff.md)
+
+## Repository About
+
+Suggested GitHub About description:
+
+`Deterministic C++ intent execution runtime with real-time control, unified screen state, and low-latency observability APIs.`
+
+Suggested topics:
+
+`intent-execution`, `automation-runtime`, `c-plus-plus`, `windows`, `deterministic-systems`, `real-time-control`, `telemetry`, `screen-perception`
 
 ## License
 

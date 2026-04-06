@@ -5,6 +5,7 @@
 #include <cmath>
 #include <cstdint>
 #include <functional>
+#include <utility>
 #include <unordered_map>
 
 #include "IntentRegistry.h"
@@ -54,6 +55,54 @@ std::string ClassifyDominantSurface(const std::unordered_map<UiControlType, std:
     }
 
     return dominant;
+}
+
+void PopulateScreenState(EnvironmentState* state, ScreenCaptureEngine* captureEngine, std::mutex* captureMutex) {
+    if (state == nullptr) {
+        return;
+    }
+
+    const auto totalStart = std::chrono::steady_clock::now();
+
+    const auto captureStart = std::chrono::steady_clock::now();
+    ScreenFrame frame;
+    std::string captureError;
+    bool captureOk = false;
+
+    if (captureEngine != nullptr && captureMutex != nullptr) {
+        std::lock_guard<std::mutex> lock(*captureMutex);
+        captureOk = captureEngine->Capture(&frame, &captureError);
+    }
+
+    if (!captureOk || !frame.valid) {
+        frame.frameId = state->sequence;
+        frame.capturedAt = state->capturedAt;
+        frame.width = std::max(1, GetSystemMetrics(SM_CXSCREEN));
+        frame.height = std::max(1, GetSystemMetrics(SM_CYSCREEN));
+        frame.simulated = true;
+        frame.valid = true;
+    }
+    const auto captureEnd = std::chrono::steady_clock::now();
+
+    const auto detectStart = captureEnd;
+    const std::vector<VisualElement> visualElements = VisualDetector::Detect(frame, state->uiElements);
+    const auto detectEnd = std::chrono::steady_clock::now();
+
+    const auto mergeStart = detectEnd;
+    state->screenState = ScreenStateAssembler::Build(
+        state->sequence,
+        state->capturedAt,
+        state->cursorPosition,
+        state->uiElements,
+        frame,
+        visualElements);
+    const auto mergeEnd = std::chrono::steady_clock::now();
+
+    state->screenFrame = std::move(frame);
+    state->visionTiming.captureMs = std::chrono::duration_cast<std::chrono::milliseconds>(captureEnd - captureStart).count();
+    state->visionTiming.detectionMs = std::chrono::duration_cast<std::chrono::milliseconds>(detectEnd - detectStart).count();
+    state->visionTiming.mergeMs = std::chrono::duration_cast<std::chrono::milliseconds>(mergeEnd - mergeStart).count();
+    state->visionTiming.totalMs = std::chrono::duration_cast<std::chrono::milliseconds>(mergeEnd - totalStart).count();
 }
 
 }  // namespace
@@ -178,6 +227,7 @@ bool RegistryEnvironmentAdapter::CaptureState(EnvironmentState* state, std::stri
 
     *state = EnvironmentStateFromSnapshot(snapshot, false);
     state->perception = LightweightPerception::Analyze(*state);
+    PopulateScreenState(state, &screenCaptureEngine_, &screenCaptureMutex_);
 
     if (!state->valid) {
         if (error != nullptr) {
@@ -239,6 +289,7 @@ bool MockEnvironmentAdapter::CaptureState(EnvironmentState* state, std::string* 
         selected.sourceSnapshotVersion == 0 ? selected.sequence : selected.sourceSnapshotVersion;
 
     selected.perception = LightweightPerception::Analyze(selected);
+    PopulateScreenState(&selected, nullptr, nullptr);
 
     *state = std::move(selected);
     return true;
@@ -302,6 +353,14 @@ bool ObservationPipeline::Start(
     lastCaptureMs_ = 0;
     totalCaptureMs_ = 0.0;
     latestSequence_ = 0;
+    latestFrameId_ = 0;
+    lastVisionCaptureMs_ = 0;
+    lastVisionDetectionMs_ = 0;
+    lastVisionMergeMs_ = 0;
+    totalVisionCaptureMs_ = 0.0;
+    totalVisionDetectionMs_ = 0.0;
+    totalVisionMergeMs_ = 0.0;
+    startedAt_ = std::chrono::steady_clock::now();
 
     bufferValid_[0] = false;
     bufferValid_[1] = false;
@@ -359,11 +418,27 @@ ObservationPipelineMetrics ObservationPipeline::Metrics() const {
     metrics.captureFailures = captureFailures_;
     metrics.lastCaptureMs = lastCaptureMs_;
     metrics.latestSequence = latestSequence_;
+    metrics.latestFrameId = latestFrameId_;
+    metrics.lastVisionCaptureMs = lastVisionCaptureMs_;
+    metrics.lastVisionDetectionMs = lastVisionDetectionMs_;
+    metrics.lastVisionMergeMs = lastVisionMergeMs_;
     metrics.adapterName = adapter_ != nullptr ? adapter_->Name() : "";
 
     const double denominator = static_cast<double>(samples_ + captureFailures_);
     if (denominator > 0.0) {
         metrics.averageCaptureMs = totalCaptureMs_ / denominator;
+    }
+
+    const double sampleDenominator = static_cast<double>(std::max<std::uint64_t>(1ULL, samples_));
+    metrics.averageVisionCaptureMs = totalVisionCaptureMs_ / sampleDenominator;
+    metrics.averageVisionDetectionMs = totalVisionDetectionMs_ / sampleDenominator;
+    metrics.averageVisionMergeMs = totalVisionMergeMs_ / sampleDenominator;
+
+    const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - startedAt_)
+                             .count();
+    if (elapsed > 0) {
+        metrics.estimatedFps = (static_cast<double>(samples_) * 1000.0) / static_cast<double>(elapsed);
     }
 
     return metrics;
@@ -404,6 +479,22 @@ void ObservationPipeline::RunLoop() {
                 captured.sourceSnapshotVersion =
                     captured.sourceSnapshotVersion == 0 ? captured.sequence : captured.sourceSnapshotVersion;
 
+                if (captured.screenFrame.frameId == 0) {
+                    captured.screenFrame.frameId = captured.sequence;
+                }
+                if (!captured.screenFrame.valid) {
+                    captured.screenFrame.width = std::max(1, GetSystemMetrics(SM_CXSCREEN));
+                    captured.screenFrame.height = std::max(1, GetSystemMetrics(SM_CYSCREEN));
+                    captured.screenFrame.simulated = true;
+                    captured.screenFrame.valid = true;
+                }
+                if (captured.screenState.frameId == 0) {
+                    captured.screenState.frameId = captured.screenFrame.frameId;
+                }
+                if (captured.screenState.environmentSequence == 0) {
+                    captured.screenState.environmentSequence = captured.sequence;
+                }
+
                 const int current = activeBufferIndex_.load(std::memory_order_relaxed);
                 const int next = current == 0 ? 1 : 0;
                 buffers_[static_cast<std::size_t>(next)] = std::move(captured);
@@ -412,6 +503,13 @@ void ObservationPipeline::RunLoop() {
 
                 ++samples_;
                 latestSequence_ = buffers_[static_cast<std::size_t>(next)].sequence;
+                latestFrameId_ = buffers_[static_cast<std::size_t>(next)].screenState.frameId;
+                lastVisionCaptureMs_ = buffers_[static_cast<std::size_t>(next)].visionTiming.captureMs;
+                lastVisionDetectionMs_ = buffers_[static_cast<std::size_t>(next)].visionTiming.detectionMs;
+                lastVisionMergeMs_ = buffers_[static_cast<std::size_t>(next)].visionTiming.mergeMs;
+                totalVisionCaptureMs_ += static_cast<double>(lastVisionCaptureMs_);
+                totalVisionDetectionMs_ += static_cast<double>(lastVisionDetectionMs_);
+                totalVisionMergeMs_ += static_cast<double>(lastVisionMergeMs_);
             } else {
                 ++captureFailures_;
             }

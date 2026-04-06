@@ -105,6 +105,35 @@ struct PerformanceContractSnapshot {
     bool withinBudget{false};
 };
 
+struct VisionLatencySample {
+    std::uint64_t frameId{0};
+    std::uint64_t environmentSequence{0};
+    double captureMs{0.0};
+    double detectionMs{0.0};
+    double mergeMs{0.0};
+    double totalMs{0.0};
+    bool simulated{false};
+    std::chrono::system_clock::time_point timestamp{std::chrono::system_clock::now()};
+};
+
+struct VisionComponentStats {
+    double averageMs{0.0};
+    double p95Ms{0.0};
+    double maxMs{0.0};
+};
+
+struct VisionSnapshot {
+    std::uint64_t sampleCount{0};
+    std::uint64_t simulatedSamples{0};
+    std::uint64_t droppedFrames{0};
+    double estimatedFps{0.0};
+    VisionComponentStats capture;
+    VisionComponentStats detection;
+    VisionComponentStats merge;
+    VisionComponentStats total;
+    std::optional<VisionLatencySample> latest;
+};
+
 class Telemetry {
 public:
     Telemetry();
@@ -123,6 +152,7 @@ public:
     void LogFailure(const std::string& traceId, const std::string& component, const std::string& message);
     void LogResolutionTiming(std::chrono::milliseconds duration);
     void LogLatencyBreakdown(const LatencyBreakdownSample& sample);
+    void LogVisionSample(const VisionLatencySample& sample);
 
     std::vector<ExecutionTrace> RecentExecutions(std::size_t limit = 50) const;
     std::vector<ExecutionTrace> QueryExecutions(
@@ -134,12 +164,14 @@ public:
     TelemetryPersistenceStatus PersistenceStatus() const;
     LatencyBreakdownSnapshot LatencySnapshot(std::size_t limit = 200) const;
     PerformanceContractSnapshot PerformanceContract(double targetBudgetMs, std::size_t limit = 200) const;
+    VisionSnapshot VisionLatencySnapshot(std::size_t limit = 200) const;
 
     std::string SerializeSnapshotJson() const;
     std::string SerializeTraceJson(const std::string& traceId) const;
     std::string SerializePersistenceJson() const;
     std::string SerializeLatencyJson(std::size_t limit = 200) const;
     std::string SerializePerformanceContractJson(double targetBudgetMs, std::size_t limit = 200) const;
+    std::string SerializeVisionJson(std::size_t limit = 200) const;
 
 private:
     struct AdapterAggregate {
@@ -171,6 +203,7 @@ private:
     std::deque<AdapterDecisionEvent> adapterDecisions_;
     std::deque<std::string> failures_;
     std::deque<LatencyBreakdownSample> latencyBreakdowns_;
+    std::deque<VisionLatencySample> visionSamples_;
 
     std::unordered_map<std::string, AdapterAggregate> adapterAggregates_;
 
@@ -181,6 +214,10 @@ private:
 
     std::uint64_t resolutionSamples_{0};
     double totalResolutionMs_{0.0};
+
+    std::uint64_t visionSimulatedSamples_{0};
+    std::uint64_t visionDroppedFrames_{0};
+    std::uint64_t latestVisionFrameId_{0};
 
     mutable std::mutex persistenceMutex_;
     std::condition_variable persistenceCv_;
@@ -206,6 +243,7 @@ private:
     static constexpr std::size_t kMaxTraceFileBytes = 1024 * 1024;
     static constexpr std::size_t kMaxPersistenceQueue = 4096;
     static constexpr std::size_t kMaxLatencySamples = 4096;
+    static constexpr std::size_t kMaxVisionSamples = 4096;
 };
 
 }  // namespace iee

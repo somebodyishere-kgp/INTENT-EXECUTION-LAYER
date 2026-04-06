@@ -14,6 +14,7 @@
 #include <vector>
 
 #include "ObserverEngine.h"
+#include "ScreenPerception.h"
 
 namespace iee {
 
@@ -44,6 +45,9 @@ struct EnvironmentState {
     std::vector<UiElement> uiElements;
     std::vector<FileSystemEntry> fileSystemEntries;
     EnvironmentPerception perception;
+    ScreenFrame screenFrame;
+    ScreenState screenState;
+    VisionTiming visionTiming;
     bool simulated{false};
     bool valid{false};
 };
@@ -72,6 +76,8 @@ public:
 
 private:
     IntentRegistry& registry_;
+    mutable std::mutex screenCaptureMutex_;
+    ScreenCaptureEngine screenCaptureEngine_;
 };
 
 class MockEnvironmentAdapter final : public EnvironmentAdapter {
@@ -105,6 +111,14 @@ struct ObservationPipelineMetrics {
     std::int64_t lastCaptureMs{0};
     double averageCaptureMs{0.0};
     std::uint64_t latestSequence{0};
+    std::uint64_t latestFrameId{0};
+    std::int64_t lastVisionCaptureMs{0};
+    std::int64_t lastVisionDetectionMs{0};
+    std::int64_t lastVisionMergeMs{0};
+    double averageVisionCaptureMs{0.0};
+    double averageVisionDetectionMs{0.0};
+    double averageVisionMergeMs{0.0};
+    double estimatedFps{0.0};
     std::string adapterName;
 };
 
@@ -145,6 +159,14 @@ private:
     std::int64_t lastCaptureMs_{0};
     double totalCaptureMs_{0.0};
     std::uint64_t latestSequence_{0};
+    std::uint64_t latestFrameId_{0};
+    std::int64_t lastVisionCaptureMs_{0};
+    std::int64_t lastVisionDetectionMs_{0};
+    std::int64_t lastVisionMergeMs_{0};
+    double totalVisionCaptureMs_{0.0};
+    double totalVisionDetectionMs_{0.0};
+    double totalVisionMergeMs_{0.0};
+    std::chrono::steady_clock::time_point startedAt_{std::chrono::steady_clock::now()};
 };
 
 }  // namespace iee

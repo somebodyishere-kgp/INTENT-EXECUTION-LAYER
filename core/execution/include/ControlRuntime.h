@@ -54,6 +54,14 @@ struct ControlRuntimeSnapshot {
     std::uint64_t latestObservationSequence{0};
     std::uint64_t observationSamples{0};
     std::int64_t lastObservationCaptureMs{0};
+    std::uint64_t latestScreenFrameId{0};
+    std::int64_t lastVisionCaptureMs{0};
+    std::int64_t lastVisionDetectionMs{0};
+    std::int64_t lastVisionMergeMs{0};
+    double averageVisionCaptureMs{0.0};
+    double averageVisionDetectionMs{0.0};
+    double averageVisionMergeMs{0.0};
+    double observationFps{0.0};
     std::string observationAdapter;
     std::uint64_t decisionIntentsProduced{0};
     std::uint64_t decisionTimeouts{0};
@@ -159,7 +167,16 @@ private:
     std::uint64_t latestObservationSequence_{0};
     std::uint64_t observationSamples_{0};
     std::int64_t lastObservationCaptureMs_{0};
+    std::uint64_t latestScreenFrameId_{0};
+    std::int64_t lastVisionCaptureMs_{0};
+    std::int64_t lastVisionDetectionMs_{0};
+    std::int64_t lastVisionMergeMs_{0};
+    double averageVisionCaptureMs_{0.0};
+    double averageVisionDetectionMs_{0.0};
+    double averageVisionMergeMs_{0.0};
+    double observationFps_{0.0};
     std::string observationAdapterName_;
+    std::uint64_t lastVisionLoggedSequence_{0};
 
     mutable std::mutex predictorMutex_;
     std::shared_ptr<Predictor> predictor_;

@@ -25,6 +25,7 @@ add_library(iee_core
     core/execution/src/DecisionInterfaces.cpp
     core/execution/src/EnvironmentAdapter.cpp
     core/execution/src/ExecutionEngine.cpp
+    core/execution/src/ScreenPerception.cpp
     core/intent/src/Intent.cpp
     core/intent/src/IntentNormalizer.cpp
     core/intent/src/IntentResolver.cpp
@@ -51,6 +52,8 @@ target_link_libraries(iee_core PUBLIC
     oleaut32
     user32
     uiautomationcore
+    d3d11
+    dxgi
 )
 
 add_executable(iee
@@ -105,6 +108,12 @@ add_executable(iee_test_unit_observation_pipeline
 target_include_directories(iee_test_unit_observation_pipeline PRIVATE tests)
 target_link_libraries(iee_test_unit_observation_pipeline PRIVATE iee_core)
 
+add_executable(iee_test_unit_screen_perception
+    tests/unit_screen_perception.cpp
+)
+target_include_directories(iee_test_unit_screen_perception PRIVATE tests)
+target_link_libraries(iee_test_unit_screen_perception PRIVATE iee_core)
+
 add_executable(iee_test_integration_failure_injection
     tests/integration_failure_injection.cpp
 )
@@ -122,6 +131,12 @@ add_executable(iee_test_stress_execution
 )
 target_include_directories(iee_test_stress_execution PRIVATE tests)
 target_link_libraries(iee_test_stress_execution PRIVATE iee_core)
+
+add_executable(iee_test_stress_screen_pipeline
+    tests/stress_screen_pipeline.cpp
+)
+target_include_directories(iee_test_stress_screen_pipeline PRIVATE tests)
+target_link_libraries(iee_test_stress_screen_pipeline PRIVATE iee_core)
 
 add_executable(iee_test_integration_control_runtime
     tests/integration_control_runtime.cpp
@@ -142,8 +157,10 @@ add_test(NAME scenario_resolution COMMAND iee_test_scenario_resolution)
 add_test(NAME unit_adapter_reliability COMMAND iee_test_unit_adapter_reliability)
 add_test(NAME unit_telemetry COMMAND iee_test_unit_telemetry)
 add_test(NAME unit_observation_pipeline COMMAND iee_test_unit_observation_pipeline)
+add_test(NAME unit_screen_perception COMMAND iee_test_unit_screen_perception)
 add_test(NAME integration_failure_injection COMMAND iee_test_integration_failure_injection)
 add_test(NAME integration_api_hardening COMMAND iee_test_integration_api_hardening)
 add_test(NAME stress_execution_loop COMMAND iee_test_stress_execution)
+add_test(NAME stress_screen_pipeline COMMAND iee_test_stress_screen_pipeline)
 add_test(NAME integration_control_runtime COMMAND iee_test_integration_control_runtime)
 add_test(NAME integration_closed_loop_feedback COMMAND iee_test_integration_closed_loop_feedback)

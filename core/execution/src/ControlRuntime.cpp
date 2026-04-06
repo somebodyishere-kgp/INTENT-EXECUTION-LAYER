@@ -151,6 +151,15 @@ bool ControlRuntime::Start(const ControlRuntimeConfig& config, std::string* mess
     latestObservationSequence_ = 0;
     observationSamples_ = 0;
     lastObservationCaptureMs_ = 0;
+    latestScreenFrameId_ = 0;
+    lastVisionCaptureMs_ = 0;
+    lastVisionDetectionMs_ = 0;
+    lastVisionMergeMs_ = 0;
+    averageVisionCaptureMs_ = 0.0;
+    averageVisionDetectionMs_ = 0.0;
+    averageVisionMergeMs_ = 0.0;
+    observationFps_ = 0.0;
+    lastVisionLoggedSequence_ = 0;
     observationAdapterName_.clear();
     lastTraceId_.clear();
     decisionIntentsProduced_ = 0;
@@ -272,6 +281,14 @@ ControlRuntimeSnapshot ControlRuntime::Status() const {
     snapshot.latestObservationSequence = latestObservationSequence_;
     snapshot.observationSamples = observationSamples_;
     snapshot.lastObservationCaptureMs = lastObservationCaptureMs_;
+    snapshot.latestScreenFrameId = latestScreenFrameId_;
+    snapshot.lastVisionCaptureMs = lastVisionCaptureMs_;
+    snapshot.lastVisionDetectionMs = lastVisionDetectionMs_;
+    snapshot.lastVisionMergeMs = lastVisionMergeMs_;
+    snapshot.averageVisionCaptureMs = averageVisionCaptureMs_;
+    snapshot.averageVisionDetectionMs = averageVisionDetectionMs_;
+    snapshot.averageVisionMergeMs = averageVisionMergeMs_;
+    snapshot.observationFps = observationFps_;
     snapshot.observationAdapter = observationAdapterName_;
     snapshot.decisionIntentsProduced = decisionIntentsProduced_;
     snapshot.decisionTimeouts = decisionTimeouts_;
@@ -683,6 +700,8 @@ void ControlRuntime::RunLoop() {
             1000.0;
 
         const ObservationPipelineMetrics observationMetrics = observationPipeline_.Metrics();
+        bool logVisionSample = false;
+        VisionLatencySample visionSample;
         {
             std::lock_guard<std::mutex> lock(mutex_);
             latestObservationSequence_ = hasSynchronizedState ? synchronizedState.sequence : 0;
@@ -691,9 +710,35 @@ void ControlRuntime::RunLoop() {
                 : 0;
             observationSamples_ = observationMetrics.samples;
             lastObservationCaptureMs_ = observationMetrics.lastCaptureMs;
+            latestScreenFrameId_ = observationMetrics.latestFrameId;
+            lastVisionCaptureMs_ = observationMetrics.lastVisionCaptureMs;
+            lastVisionDetectionMs_ = observationMetrics.lastVisionDetectionMs;
+            lastVisionMergeMs_ = observationMetrics.lastVisionMergeMs;
+            averageVisionCaptureMs_ = observationMetrics.averageVisionCaptureMs;
+            averageVisionDetectionMs_ = observationMetrics.averageVisionDetectionMs;
+            averageVisionMergeMs_ = observationMetrics.averageVisionMergeMs;
+            observationFps_ = observationMetrics.estimatedFps;
             if (!observationMetrics.adapterName.empty()) {
                 observationAdapterName_ = observationMetrics.adapterName;
             }
+
+            if (hasSynchronizedState && synchronizedState.sequence > 0 && synchronizedState.sequence != lastVisionLoggedSequence_) {
+                lastVisionLoggedSequence_ = synchronizedState.sequence;
+                logVisionSample = true;
+
+                visionSample.frameId = synchronizedState.screenState.frameId;
+                visionSample.environmentSequence = synchronizedState.sequence;
+                visionSample.captureMs = static_cast<double>(synchronizedState.visionTiming.captureMs);
+                visionSample.detectionMs = static_cast<double>(synchronizedState.visionTiming.detectionMs);
+                visionSample.mergeMs = static_cast<double>(synchronizedState.visionTiming.mergeMs);
+                visionSample.totalMs = static_cast<double>(synchronizedState.visionTiming.totalMs);
+                visionSample.simulated = synchronizedState.screenState.simulated;
+                visionSample.timestamp = synchronizedState.capturedAt;
+            }
+        }
+
+        if (logVisionSample) {
+            telemetry_.LogVisionSample(visionSample);
         }
 
         if (hasSynchronizedState) {
@@ -957,7 +1002,17 @@ std::string ControlRuntime::SerializeSnapshotJson(const ControlRuntimeSnapshot& 
     stream << "\"adapter\":\"" << EscapeJson(snapshot.observationAdapter) << "\",";
     stream << "\"latest_sequence\":" << snapshot.latestObservationSequence << ",";
     stream << "\"samples\":" << snapshot.observationSamples << ",";
-    stream << "\"last_capture_ms\":" << snapshot.lastObservationCaptureMs;
+    stream << "\"last_capture_ms\":" << snapshot.lastObservationCaptureMs << ",";
+    stream << "\"latest_frame_id\":" << snapshot.latestScreenFrameId << ",";
+    stream << "\"fps\":" << snapshot.observationFps << ",";
+    stream << "\"vision\":{";
+    stream << "\"last_capture_ms\":" << snapshot.lastVisionCaptureMs << ",";
+    stream << "\"last_detection_ms\":" << snapshot.lastVisionDetectionMs << ",";
+    stream << "\"last_merge_ms\":" << snapshot.lastVisionMergeMs << ",";
+    stream << "\"avg_capture_ms\":" << snapshot.averageVisionCaptureMs << ",";
+    stream << "\"avg_detection_ms\":" << snapshot.averageVisionDetectionMs << ",";
+    stream << "\"avg_merge_ms\":" << snapshot.averageVisionMergeMs;
+    stream << "}";
     stream << "},";
     stream << "\"decision\":{";
     stream << "\"produced\":" << snapshot.decisionIntentsProduced << ",";
