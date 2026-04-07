@@ -1,10 +1,32 @@
-# IEE Context Handoff (v1.6)
+# IEE Context Handoff (v1.7)
 
 ## 1. What Are We Building
-The Intent Execution Engine (IEE): a deterministic native execution layer that maps live OS/application state into executable intent space. v1.6 upgrades UIG into a production execution-aware graph with stable identity, node planning semantics, reveal semantics, and versioned deltas.
+The Intent Execution Engine (IEE): a deterministic native execution layer that maps live OS/application state into executable intent space. v1.7 adds an AI-facing interface layer over the v1.6 production execution graph.
 
 ## 2. Current State
-Completed in v1.6:
+Completed in v1.7:
+- AI SDK surface:
+  - added `IEEClient` with stateless state retrieval and contract-backed execute
+- Task interface:
+  - added `TaskRequest`, `TaskPlanner`, and deterministic plan result contracts
+  - added `POST /task/plan` planning-only endpoint
+- Reveal hardening and execution guarantee:
+  - added `RevealExecutor` with retries + reveal verification
+  - added `ExecutionContract` enforcing `reveal -> execute -> verify`
+  - upgraded `/execute` responses with contract/reveal stage diagnostics
+- AI state projection:
+  - added `AIStateView` and `GET /state/ai`
+- Latency strict mode:
+  - added CLI `iee perf --strict`
+  - added API strict metrics in `GET /perf?strict=true`
+- Developer experience:
+  - added `iee demo presentation|browser [--json] [--run]`
+  - added `docs/ai_sdk.md`
+- Validation upgrades:
+  - added `scenario_task_interface`
+  - updated `integration_api_hardening` for `/state/ai`, `/task/plan`, and strict perf
+
+Retained in v1.7 from v1.6:
 - Stable node identity:
   - added `NodeId { stableId, signature }`
   - deterministic hash from UI path/role/label/automation context
@@ -39,30 +61,40 @@ Retained from v1.5.1 and earlier:
 - Telemetry/runtime control/streaming behavior
 
 ## 3. Last Work Done
-- Reworked `core/interaction` schema to include v1.6 contracts.
-- Rebuilt UIG builder logic for stable hash identities and execution-aware node payloads.
-- Added graph delta computation and serialization.
-- Extended API route handlers with graph history + delta and node execution metadata.
-- Added CLI handlers for `plan` and `reveal`, plus graph delta options.
-- Updated docs (`architecture`, `status`, `parity`, `issues_and_errors`, `context_handoff`).
+- Added new v1.7 modules:
+  - `TaskInterface` (`TaskRequest`, `TaskPlanner`)
+  - `AIStateView` projector
+  - `RevealExecutor`
+  - `ExecutionContract`
+  - `IEEClient`
+- Wired API additions:
+  - `GET /state/ai`
+  - `POST /task/plan`
+  - strict perf fields on `/perf`
+  - contract metadata on `/execute`
+- Wired CLI additions:
+  - `iee demo presentation|browser [--json] [--run]`
+  - `iee perf --strict`
+- Added scenario and integration test coverage for v1.7 routes and planner behavior.
+- Updated README and v1.7 docs sync set.
 
 ## 4. Current Problem
-No active blocker identified in the migration patch set.
+No active blocker.
 
 Known non-blocking considerations:
-1. Reveal strategy is currently a planning contract; adapter-level reveal execution can be further hardened.
-2. API graph history is intentionally bounded and may return `reset_required` for stale versions.
-3. CLI delta mode is snapshot-local and not a long-lived history service.
+1. Reveal steps currently map to generic activation primitives; adapter-specific reveal actions can be expanded.
+2. Task planner ranking is deterministic keyword/domain based; richer semantic ranking is future work.
+3. API graph history is intentionally bounded and may return `reset_required` for stale versions.
 
 ## 5. Next Plan
-1. Integrate reveal strategy execution primitives into adapter execution pipelines.
-2. Add long-run graph-soak tests to validate identity stability under fast UI churn.
-3. Add optional graph-history cursor/token contracts for long-lived clients.
-4. Expand execution-plan validation with adapter capability feasibility checks.
+1. Expand adapter-native reveal action mappings (`expand_parent`, `scroll_into_view`) for stronger reveal guarantees.
+2. Add planner stress tests for large graphs and high-ambiguity label sets.
+3. Add optional `TaskRequest` guardrail fields (allowlist/denylist actions, max reveal steps).
+4. Extend SDK samples for external process integration and API parity examples.
 
 ## 6. Key Decisions Taken
-- v1.6 remains additive; legacy fields and routes are preserved.
-- Stable IDs use deterministic hashing, not UIA string-prefix IDs.
-- Descriptor/state split is explicit to support cleaner diff and planning semantics.
-- Execution semantics (plan/reveal/binding) are first-class UIG outputs.
-- Delta transport uses bounded history plus explicit reset signaling.
+- v1.7 remains additive and non-breaking over v1.6.
+- Task planning is planning-only (`/task/plan`) and never executes side effects.
+- Execution guarantees are explicit and opt into reveal metadata through node-aware contracts.
+- AI state exposure is compact and deterministic (`AIStateView`) instead of full raw snapshots.
+- Strict perf mode is explicit (`--strict` / `strict=true`) rather than always enforcing non-zero exits.

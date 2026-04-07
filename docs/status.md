@@ -1,52 +1,54 @@
-# IEE v1.6 Status
+# IEE v1.7 Status
 
 ## Date
-2026-04-07
+2026-04-08
 
 ## Current State
-IEE has been upgraded to v1.6 with a production execution-aware UIG. The graph now provides stable hashed node identity, descriptor/state separation, per-node execution plans, reveal strategies for hidden UI, and versioned graph delta support.
+IEE has been upgraded to v1.7 with an additive AI-facing interface layer over the v1.6 production execution graph.
 
-## Completed v1.6 Work
-- Stable node identity:
-  - introduced `NodeId { stableId, signature }`
-  - deterministic identity hash from UI path/role/label/automation context
-- Descriptor/state split:
-  - added `InteractionDescriptor` and `InteractionState`
-  - preserved legacy node fields for additive compatibility
-- Execution-aware nodes:
-  - added `ExecutionPlan` and `PlanStep` for each node
-  - added `RevealStrategy` for hidden/offscreen/collapsed targets
-  - added `NodeIntentBinding` to bind node -> action + plan + reveal
-- Graph versioning and delta:
-  - added `InteractionGraph.version`
-  - added `GraphDelta` computation/serialization
-- API expansion (additive):
-  - `GET /interaction-graph` now includes graph version
-  - `GET /interaction-graph?delta_since=<version>` returns bounded-history delta payload
-  - `GET /interaction-node/{id}` now includes execution plan/reveal/binding payloads
-  - `GET /capabilities/full` now includes graph version/signature metadata
-- CLI expansion:
-  - added `iee plan <node_id> [--json]`
-  - added `iee reveal <node_id> [--json]`
-  - extended `iee graph` with `--delta_since` / `--delta`
-- Validation expansion:
-  - updated `unit_interaction_graph` for stable IDs + reveal/plan + delta correctness
-  - updated `scenario_uig_hidden_exposure` for hashed IDs and reveal checks
-  - updated `integration_api_hardening` for dynamic node lookup and delta endpoint checks
+The runtime now supports:
 
-## Retained v1.5.1 Behavior
-- Full-tree hidden/offscreen/collapsed UI capture retained.
-- Unified state merge (`ScreenState` + `InteractionGraph`) retained.
-- Existing API/CLI routes remain available.
-- Telemetry, runtime control, and stream endpoints remain compatible.
+- stateless in-process SDK access (`IEEClient`)
+- deterministic planning-only task decomposition (`TaskPlanner`)
+- reveal-aware execution guarantees (`ExecutionContract` + `RevealExecutor`)
+- compact model-facing state projection (`AIStateView`)
+- strict latency contract reporting in both API and CLI surfaces
+
+## Completed v1.7 Work
+- SDK layer:
+  - added `interface/sdk/include/IEEClient.h`
+  - added `GetState`, `GetStateAiJson`, and contract-backed `Execute`
+- Task interface:
+  - added `TaskRequest`, `TaskPlanCandidate`, `TaskPlanResult`, and `TaskPlanner`
+  - added planning-only endpoint `POST /task/plan`
+- Reveal and execution guarantees:
+  - added `RevealExecutor` with bounded retries and reveal verification checks
+  - added `ExecutionContract` to enforce `reveal -> execute -> verify`
+  - upgraded `/execute` responses with contract/reveal diagnostics
+- AI projection:
+  - added `AIStateView` + projector
+  - added `GET /state/ai`
+- Latency strict mode:
+  - upgraded `/perf` with strict status fields and strict conflict behavior
+  - upgraded CLI `iee perf --strict`
+- Developer experience:
+  - added CLI demos: `iee demo presentation|browser [--json] [--run]`
+  - added `docs/ai_sdk.md`
+- Validation:
+  - added `scenario_task_interface`
+  - extended `integration_api_hardening` for `/state/ai`, `/task/plan`, and strict perf
+
+## Retained Prior Behavior
+- v1.5.1 and v1.6 routes remain available.
+- UIG stable IDs, descriptor/state split, reveal metadata, and graph delta contracts remain additive-compatible.
+- Telemetry persistence, control runtime, and stream endpoints remain intact.
 
 ## Verification
-- Build and tests should be run via:
-  - `cmake -S . -B build`
-  - `cmake --build build --config Debug`
-  - `ctest --test-dir build -C Debug --output-on-failure`
+- Configure: `cmake -S . -B build`
+- Build: `cmake --build build --config Debug`
+- Tests: `ctest --test-dir build -C Debug --output-on-failure`
 
 ## Remaining Non-Blocking Gaps
-- Reveal strategy remains a deterministic plan contract; adapter-level reveal execution hardening can be expanded.
-- Graph history for API delta is intentionally bounded (reset semantics for stale clients).
-- CLI graph delta is snapshot-local and not long-lived session history.
+- Reveal steps currently map to generic activation primitives; adapter-specific reveal specializations can be expanded.
+- Task planning is deterministic keyword/domain based; deeper semantic ranking remains future work.
+- Graph history for API delta remains intentionally bounded for memory safety.

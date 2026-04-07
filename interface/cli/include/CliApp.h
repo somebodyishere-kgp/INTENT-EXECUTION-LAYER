@@ -25,6 +25,7 @@ private:
     int HandleLatency(const ParsedCommand& command);
     int HandlePerf(const ParsedCommand& command);
     int HandleVision(const ParsedCommand& command);
+    int HandleDemo(const ParsedCommand& command);
     int HandleGraph(const ParsedCommand& command);
     int HandleNode(const ParsedCommand& command);
     int HandlePlan(const ParsedCommand& command);

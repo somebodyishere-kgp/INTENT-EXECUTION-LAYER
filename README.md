@@ -27,6 +27,28 @@ This repository now includes:
 - IEE v1.5: screen perception + unified screen state
 - IEE v1.5.1: unified interaction graph + hidden UI exposure
 - IEE v1.6: production execution-aware UIG + graph versioning/deltas
+- IEE v1.7: AI SDK, task planning interface, reveal hardening, and execution contracts
+
+## v1.7 Highlights
+
+- AI-facing SDK:
+  - `IEEClient` with stateless `getState` and `execute` entrypoints for in-process integrations
+- Task interface:
+  - `TaskRequest` + deterministic `TaskPlanner`
+  - new planning-only API route: `POST /task/plan`
+- Reveal and contract hardening:
+  - `RevealExecutor` executes reveal plans with retries and verification checks
+  - `ExecutionContract` enforces `reveal -> execute -> verify` when node metadata is available
+- AI state projection:
+  - `AIStateView` with compact, model-friendly state summaries
+  - new API route: `GET /state/ai`
+- Latency contract strict mode:
+  - CLI: `iee perf --strict`
+  - API: `GET /perf?strict=true` with explicit strict pass/fail fields
+- Developer experience:
+  - scenario demos: `iee demo presentation` and `iee demo browser`
+  - SDK example source: `interface/sdk/examples/ai_client_example.cpp`
+  - new task-interface scenario coverage in `scenario_task_interface`
 
 ## v1.6 Highlights
 
@@ -196,6 +218,12 @@ ctest --test-dir build -C Debug --output-on-failure
 # performance contract snapshot
 ./build/Debug/iee.exe perf
 ./build/Debug/iee.exe perf --json --target_ms 12 --limit 300
+./build/Debug/iee.exe perf --target_ms 12 --strict
+
+# deterministic task planning demos
+./build/Debug/iee.exe demo presentation
+./build/Debug/iee.exe demo browser --json
+./build/Debug/iee.exe demo presentation --run
 
 # vision pipeline metrics
 ./build/Debug/iee.exe vision
@@ -227,10 +255,12 @@ Available routes:
 - `GET /telemetry/persistence`
 - `GET /control/status`
 - `GET /stream/state`
+- `GET /state/ai`
 - `GET /stream/frame`
 - `GET /stream/live`
 - `GET /perf`
 - `POST /execute`
+- `POST /task/plan`
 - `POST /predict`
 - `POST /explain`
 - `POST /control/start`
@@ -243,6 +273,18 @@ Example execute payload:
 {
 	"action": "create",
 	"path": "notes.txt"
+}
+```
+
+Example task-plan payload:
+
+```json
+{
+  "goal": "export hidden menu",
+  "target": "Export",
+  "domain": "presentation",
+  "allow_hidden": "true",
+  "max_plans": "3"
 }
 ```
 
@@ -323,16 +365,17 @@ Primary docs:
 - [docs/parity.md](docs/parity.md)
 - [docs/issues_and_errors.md](docs/issues_and_errors.md)
 - [docs/context_handoff.md](docs/context_handoff.md)
+- [docs/ai_sdk.md](docs/ai_sdk.md)
 
 ## Repository About
 
 Suggested GitHub About description:
 
-`Deterministic C++ intent execution runtime with production execution-aware interaction graphs, real-time control, and low-latency observability APIs.`
+`Deterministic C++ intent execution runtime with AI-facing SDK, production execution-aware interaction graphs, real-time control, and low-latency observability APIs.`
 
 Suggested topics:
 
-`intent-execution`, `automation-runtime`, `c-plus-plus`, `windows`, `deterministic-systems`, `real-time-control`, `telemetry`, `screen-perception`, `interaction-graph`, `accessibility`
+`intent-execution`, `automation-runtime`, `c-plus-plus`, `windows`, `deterministic-systems`, `real-time-control`, `telemetry`, `screen-perception`, `interaction-graph`, `accessibility`, `ai-sdk`, `task-planning`
 
 ## License
 

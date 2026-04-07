@@ -10,12 +10,15 @@
 #include <iostream>
 #include <limits>
 #include <map>
+#include <sstream>
 #include <string>
 #include <system_error>
 
+#include "ExecutionContract.h"
 #include "InteractionGraph.h"
 #include "Intent.h"
 #include "IntentApiServer.h"
+#include "TaskInterface.h"
 
 namespace iee {
 namespace {
@@ -271,6 +274,10 @@ int CliApp::Run(int argc, char* argv[]) {
 
     if (command.command == "vision") {
         return HandleVision(command);
+    }
+
+    if (command.command == "demo") {
+        return HandleDemo(command);
     }
 
     CliParser::PrintHelp();
@@ -886,8 +893,8 @@ int CliApp::HandleApi(const ParsedCommand& command) {
     std::cout << "Starting IEE local API on 127.0.0.1:" << port << "\n";
     std::cout << "Routes: GET /health, GET /intents, GET /capabilities, GET /control/status, "
                  "GET /capabilities/full, GET /interaction-graph, GET /interaction-node/{id}, "
-                 "GET /telemetry/persistence, GET /stream/state, GET /stream/frame, GET /stream/live, GET /perf, "
-                 "POST /execute, POST /predict, POST /explain, POST /control/start, POST /control/stop, "
+                 "GET /telemetry/persistence, GET /stream/state, GET /state/ai, GET /stream/frame, GET /stream/live, GET /perf, "
+                 "POST /execute, POST /task/plan, POST /predict, POST /explain, POST /control/start, POST /control/stop, "
                  "POST /stream/control\n";
     std::cout << "Graph delta query: GET /interaction-graph?delta_since=<version>\n";
     if (singleRequest) {
@@ -1084,13 +1091,23 @@ int CliApp::HandleLatency(const ParsedCommand& command) {
 int CliApp::HandlePerf(const ParsedCommand& command) {
     const std::size_t limit = ReadSizeOption(command, "limit", 200U, 4096U);
     const double targetBudgetMs = ReadDoubleOption(command, "target_ms", 16.0, 1.0, 1000.0);
+    const bool strict = HasOption(command, "strict");
+    const PerformanceContractSnapshot contract = telemetry_.PerformanceContract(targetBudgetMs, limit);
 
     if (HasOption(command, "json")) {
-        std::cout << telemetry_.SerializePerformanceContractJson(targetBudgetMs, limit) << "\n";
-        return 0;
-    }
+        std::ostringstream json;
+        json << "{";
+        json << "\"strict\":" << (strict ? "true" : "false") << ",";
+        json << "\"strict_passed\":" << (contract.withinBudget ? "true" : "false") << ",";
+        json << "\"strict_status\":\""
+             << (strict ? (contract.withinBudget ? "pass" : "fail") : "disabled")
+             << "\",";
+        json << "\"contract\":" << telemetry_.SerializePerformanceContractJson(targetBudgetMs, limit);
+        json << "}";
 
-    const PerformanceContractSnapshot contract = telemetry_.PerformanceContract(targetBudgetMs, limit);
+        std::cout << json.str() << "\n";
+        return (strict && !contract.withinBudget) ? 2 : 0;
+    }
 
     std::cout << "Performance contract\n";
     std::cout << "  Samples          : " << contract.sampleCount << "\n";
@@ -1102,7 +1119,13 @@ int CliApp::HandlePerf(const ParsedCommand& command) {
     std::cout << "  drift ms         : " << std::fixed << std::setprecision(3) << contract.driftMs << "\n";
     std::cout << "  within budget    : " << (contract.withinBudget ? "true" : "false") << "\n";
 
-    return contract.withinBudget ? 0 : 2;
+    if (strict) {
+        std::cout << "  strict mode      : " << (contract.withinBudget ? "pass" : "fail") << "\n";
+    } else {
+        std::cout << "  strict mode      : disabled\n";
+    }
+
+    return (strict && !contract.withinBudget) ? 2 : 0;
 }
 
 int CliApp::HandleVision(const ParsedCommand& command) {
@@ -1153,6 +1176,96 @@ int CliApp::HandleVision(const ParsedCommand& command) {
     }
 
     return 0;
+}
+
+int CliApp::HandleDemo(const ParsedCommand& command) {
+    std::string scenario = ReadOption(command, "scenario");
+    if (scenario.empty() && !command.positionals.empty()) {
+        scenario = command.positionals.front();
+    }
+
+    std::transform(scenario.begin(), scenario.end(), scenario.begin(), [](unsigned char ch) {
+        if (ch >= 'A' && ch <= 'Z') {
+            return static_cast<char>(ch - 'A' + 'a');
+        }
+        return static_cast<char>(ch);
+    });
+
+    if (scenario != "presentation" && scenario != "browser") {
+        std::cerr << "Usage: iee demo presentation|browser [--json] [--run]\n";
+        return 1;
+    }
+
+    InteractionGraph graph = BuildLatestInteractionGraph(intentRegistry_);
+    if (!graph.valid) {
+        std::cerr << "Unable to build interaction graph for demo scenario\n";
+        return 1;
+    }
+
+    TaskRequest request;
+    if (scenario == "presentation") {
+        request.goal = "start presentation mode";
+        request.targetHint = "presentation slide show present";
+        request.domain = TaskDomain::Presentation;
+    } else {
+        request.goal = "focus browser address bar";
+        request.targetHint = "browser tab address search url";
+        request.domain = TaskDomain::Browser;
+    }
+    request.allowHidden = true;
+    request.maxPlans = 3;
+
+    TaskPlanner planner;
+    const TaskPlanResult plan = planner.Plan(request, graph);
+
+    if (HasOption(command, "json")) {
+        std::cout << TaskPlanner::SerializeJson(plan) << "\n";
+    } else {
+        std::cout << "Demo scenario: " << scenario << "\n";
+        std::cout << "Task: " << plan.goal << "\n";
+        std::cout << "Summary: " << plan.summary << "\n";
+        std::cout << "Candidates: " << plan.candidates.size() << "\n";
+
+        for (std::size_t index = 0; index < plan.candidates.size(); ++index) {
+            const TaskPlanCandidate& candidate = plan.candidates[index];
+            std::cout << "  [" << index << "] node=" << candidate.nodeId
+                      << " action=" << candidate.action
+                      << " score=" << std::fixed << std::setprecision(3) << candidate.score
+                      << " hidden=" << (candidate.hidden ? "true" : "false")
+                      << " reveal=" << (candidate.requiresReveal ? "true" : "false")
+                      << " label=\"" << candidate.label << "\"\n";
+        }
+    }
+
+    if (!HasOption(command, "run")) {
+        return plan.candidates.empty() ? 1 : 0;
+    }
+
+    if (plan.candidates.empty()) {
+        std::cerr << "No executable candidate available for demo run\n";
+        return 1;
+    }
+
+    const std::string nodeId = plan.candidates.front().nodeId;
+    const auto node = InteractionGraphBuilder::FindNode(graph, nodeId);
+    if (!node.has_value()) {
+        std::cerr << "Demo candidate node not found in graph\n";
+        return 1;
+    }
+
+    Intent intent = InteractionGraphBuilder::GenerateIntent(*node);
+    intent.source = "demo";
+
+    ExecutionContract contract(executionEngine_, intentRegistry_);
+    const ExecutionContractResult execution = contract.Execute(intent, nodeId);
+
+    std::cout << "Run result\n";
+    std::cout << "  status            : " << ToString(execution.execution.status) << "\n";
+    std::cout << "  contract_satisfied: " << (execution.contractSatisfied ? "true" : "false") << "\n";
+    std::cout << "  stage             : " << execution.stage << "\n";
+    std::cout << "  message           : " << execution.execution.message << "\n";
+
+    return execution.contractSatisfied ? 0 : 2;
 }
 
 }  // namespace iee

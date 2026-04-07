@@ -17,6 +17,9 @@
 #include <unordered_map>
 
 #include "ActionSequence.h"
+#include "AIStateView.h"
+#include "ExecutionContract.h"
+#include "TaskInterface.h"
 
 #pragma comment(lib, "Ws2_32.lib")
 
@@ -349,6 +352,34 @@ bool ParseUint64(const std::string& value, std::uint64_t* output) {
 
     *output = parsed;
     return true;
+}
+
+bool ParseBoolString(const std::string& value, bool* output) {
+    if (output == nullptr) {
+        return false;
+    }
+
+    const std::string normalized = ToAsciiLower(value);
+    if (normalized == "1" || normalized == "true" || normalized == "yes" || normalized == "on") {
+        *output = true;
+        return true;
+    }
+
+    if (normalized == "0" || normalized == "false" || normalized == "no" || normalized == "off") {
+        *output = false;
+        return true;
+    }
+
+    return false;
+}
+
+std::size_t ParseSizeWithBounds(const std::string& value, std::size_t defaultValue, std::size_t minValue, std::size_t maxValue) {
+    std::uint64_t parsed = 0;
+    if (!ParseUint64(value, &parsed)) {
+        return defaultValue;
+    }
+
+    return static_cast<std::size_t>(std::clamp<std::uint64_t>(parsed, minValue, maxValue));
 }
 
 std::int64_t EpochMs(std::chrono::system_clock::time_point timePoint) {
@@ -1474,6 +1505,27 @@ std::string IntentApiServer::HandleRequest(const std::string& request) {
         return BuildResponse(200, "OK", json.str());
     }
 
+    if (method == "GET" && path == "/state/ai") {
+        bool runtimeActive = false;
+        EnvironmentState state;
+        if (!CaptureEnvironmentState(controlRuntime_, streamEnvironmentAdapter_, &state, &runtimeActive)) {
+            return BuildErrorResponse(503, "Service Unavailable", "state_ai_unavailable", "Unable to capture environment state");
+        }
+
+        EnsureUnifiedState(&state);
+
+        AIStateViewProjector projector;
+        const AIStateView view = projector.Build(state, runtimeActive);
+
+        std::ostringstream json;
+        json << "{";
+        json << "\"state\":" << AIStateViewProjector::SerializeJson(view) << ",";
+        json << "\"latency\":" << telemetry_.SerializeLatencyJson(200);
+        json << "}";
+
+        return BuildResponse(200, "OK", json.str());
+    }
+
     if (method == "GET" && path == "/stream/frame") {
         bool runtimeActive = false;
         EnvironmentState state;
@@ -1727,15 +1779,26 @@ std::string IntentApiServer::HandleRequest(const std::string& request) {
 
         const std::size_t limit = ReadQuerySize(query, "limit", 200U, 1U, 4096U);
         const bool runtimeActive = controlRuntime_ != nullptr && controlRuntime_->Status().active;
+        const bool strict = ReadQueryBool(query, "strict", false);
+        const PerformanceContractSnapshot contract = telemetry_.PerformanceContract(targetBudgetMs, limit);
 
         std::ostringstream json;
         json << "{";
         json << "\"runtime_active\":" << (runtimeActive ? "true" : "false") << ",";
+        json << "\"strict\":" << (strict ? "true" : "false") << ",";
+        json << "\"strict_passed\":" << (contract.withinBudget ? "true" : "false") << ",";
+        json << "\"strict_status\":\""
+             << (strict ? (contract.withinBudget ? "pass" : "fail") : "disabled")
+             << "\",";
         json << "\"contract\":" << telemetry_.SerializePerformanceContractJson(targetBudgetMs, limit);
         if (runtimeActive) {
             json << ",\"control_status\":" << ControlRuntime::SerializeSnapshotJson(controlRuntime_->Status());
         }
         json << "}";
+
+        if (strict && !contract.withinBudget) {
+            return BuildResponse(409, "Conflict", json.str());
+        }
 
         return BuildResponse(200, "OK", json.str());
     }
@@ -1928,6 +1991,50 @@ std::string IntentApiServer::HandleRequest(const std::string& request) {
         return BuildResponse(statusCode, statusCode == 200 ? "OK" : "Internal Server Error", resultJson.str());
     }
 
+    if (method == "POST" && path == "/task/plan") {
+        std::map<std::string, std::string> payload;
+        std::string jsonError;
+        if (!ParseFlatJsonObject(body, &payload, &jsonError)) {
+            return BuildErrorResponse(400, "Bad Request", "invalid_json", jsonError);
+        }
+
+        TaskRequest taskRequest;
+        taskRequest.goal = ReadPayloadValue(payload, {"goal", "task", "objective"});
+        if (taskRequest.goal.empty()) {
+            return BuildErrorResponse(400, "Bad Request", "missing_goal", "Missing required field: goal");
+        }
+
+        taskRequest.targetHint = ReadPayloadValue(payload, {"target", "target_hint", "hint"});
+        taskRequest.domain = TaskPlanner::ParseDomain(ReadPayloadValue(payload, {"domain"}));
+        taskRequest.maxPlans = ParseSizeWithBounds(ReadPayloadValue(payload, {"max_plans", "limit"}), 3U, 1U, 8U);
+
+        bool allowHidden = true;
+        const std::string allowHiddenRaw = ReadPayloadValue(payload, {"allow_hidden", "include_hidden"});
+        ParseBoolString(allowHiddenRaw, &allowHidden);
+        taskRequest.allowHidden = allowHidden;
+
+        bool runtimeActive = false;
+        EnvironmentState state;
+        if (!CaptureEnvironmentState(controlRuntime_, streamEnvironmentAdapter_, &state, &runtimeActive)) {
+            return BuildErrorResponse(503, "Service Unavailable", "task_plan_state_unavailable", "Unable to capture environment state");
+        }
+
+        EnsureUnifiedState(&state);
+
+        TaskPlanner planner;
+        const TaskPlanResult plan = planner.Plan(taskRequest, state.unifiedState.interactionGraph);
+
+        std::ostringstream json;
+        json << "{";
+        json << "\"runtime_active\":" << (runtimeActive ? "true" : "false") << ",";
+        json << "\"planning_only\":true,";
+        json << "\"graph_version\":" << state.unifiedState.interactionGraph.version << ",";
+        json << "\"task_plan\":" << TaskPlanner::SerializeJson(plan);
+        json << "}";
+
+        return BuildResponse(200, "OK", json.str());
+    }
+
     if (method == "POST" && path == "/predict") {
         std::map<std::string, std::string> payload;
         std::string jsonError;
@@ -2118,6 +2225,11 @@ std::string IntentApiServer::HandleRequest(const std::string& request) {
             return BuildErrorResponse(400, "Bad Request", "unsupported_action", "Action is not executable");
         }
 
+        const std::string nodeId = ReadPayloadValue(payload, {"node_id", "nodeId"});
+        if (!nodeId.empty()) {
+            intent.target.nodeId = nodeId;
+        }
+
         const std::string executionMode = ToAsciiLower(ReadPayloadValue(payload, {"mode", "execution_mode"}));
         if (executionMode == "queued" || executionMode == "realtime") {
             if (!controlRuntime_ || !controlRuntime_->Status().active) {
@@ -2145,7 +2257,9 @@ std::string IntentApiServer::HandleRequest(const std::string& request) {
             return BuildResponse(202, "Accepted", queuedJson.str());
         }
 
-        const ExecutionResult result = executionEngine_.Execute(intent);
+        ExecutionContract contract(executionEngine_, registry_);
+        const ExecutionContractResult contractResult = contract.Execute(intent, intent.target.nodeId);
+        const ExecutionResult result = contractResult.execution;
         if ((result.status == ExecutionStatus::SUCCESS || result.status == ExecutionStatus::PARTIAL) && !intent.id.empty()) {
             registry_.RecordInteraction(intent.id);
         }
@@ -2157,7 +2271,15 @@ std::string IntentApiServer::HandleRequest(const std::string& request) {
         json << "\"verified\":" << (result.verified ? "true" : "false") << ",";
         json << "\"method\":\"" << EscapeJson(result.method) << "\",";
         json << "\"message\":\"" << EscapeJson(result.message) << "\",";
-        json << "\"durationMs\":" << result.duration.count();
+        json << "\"durationMs\":" << result.duration.count() << ",";
+        json << "\"contract_satisfied\":" << (contractResult.contractSatisfied ? "true" : "false") << ",";
+        json << "\"contract_stage\":\"" << EscapeJson(contractResult.stage) << "\",";
+        json << "\"contract_message\":\"" << EscapeJson(contractResult.message) << "\",";
+        json << "\"reveal_required\":" << (contractResult.revealRequired ? "true" : "false") << ",";
+        json << "\"reveal_attempted\":" << (contractResult.reveal.attempted ? "true" : "false") << ",";
+        json << "\"reveal_success\":" << (contractResult.reveal.success ? "true" : "false") << ",";
+        json << "\"reveal_attempted_steps\":" << contractResult.reveal.attemptedSteps << ",";
+        json << "\"reveal_completed_steps\":" << contractResult.reveal.completedSteps;
         json << "}";
 
         const int statusCode = result.status == ExecutionStatus::FAILED ? 500 : 200;

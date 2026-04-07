@@ -202,6 +202,13 @@ int main() {
         }
 
         {
+            const std::string response = api.HandleRequestForTesting(BuildHttpRequest("GET", "/state/ai"));
+            AssertTrue(HasStatus(response, 200), "GET /state/ai should return 200");
+            AssertTrue(response.find("\"interaction_summary\"") != std::string::npos, "AI state response should include interaction summary");
+            AssertTrue(response.find("\"dominant_actions\"") != std::string::npos, "AI state response should include dominant actions");
+        }
+
+        {
             const std::string response = api.HandleRequestForTesting(BuildHttpRequest("GET", "/stream/frame"));
             AssertTrue(HasStatus(response, 200), "GET /stream/frame should return 200");
             AssertTrue(response.find("\"mode\":\"full\"") != std::string::npos, "Stream frame response should default to full mode");
@@ -225,6 +232,13 @@ int main() {
             const std::string response = api.HandleRequestForTesting(BuildHttpRequest("GET", "/perf?target_ms=10&limit=64"));
             AssertTrue(HasStatus(response, 200), "GET /perf should return 200");
             AssertTrue(response.find("\"contract\"") != std::string::npos, "Perf response should include contract object");
+        }
+
+        {
+            const std::string response = api.HandleRequestForTesting(BuildHttpRequest("GET", "/perf?target_ms=10&limit=64&strict=true"));
+            AssertTrue(HasStatus(response, 200) || HasStatus(response, 409), "GET /perf strict mode should return 200 or 409");
+            AssertTrue(response.find("\"strict\":true") != std::string::npos, "Strict perf response should include strict flag");
+            AssertTrue(response.find("\"strict_passed\"") != std::string::npos, "Strict perf response should include strict pass field");
         }
 
         {
@@ -283,6 +297,14 @@ int main() {
             const std::string response = api.HandleRequestForTesting(BuildHttpRequest("POST", "/explain", body));
             AssertTrue(HasStatus(response, 200), "POST /explain should return 200");
             AssertTrue(response.find("\"candidates\"") != std::string::npos, "Explain response should include candidates");
+        }
+
+        {
+            const std::string body = "{\"goal\":\"export hidden menu\",\"target\":\"Export\",\"domain\":\"presentation\",\"allow_hidden\":\"true\"}";
+            const std::string response = api.HandleRequestForTesting(BuildHttpRequest("POST", "/task/plan", body));
+            AssertTrue(HasStatus(response, 200), "POST /task/plan should return 200");
+            AssertTrue(response.find("\"planning_only\":true") != std::string::npos, "Task plan response should be planning-only");
+            AssertTrue(response.find("\"task_plan\"") != std::string::npos, "Task plan response should include task plan payload");
         }
 
         {

@@ -24,16 +24,21 @@ add_library(iee_core
     core/execution/src/ControlRuntime.cpp
     core/execution/src/DecisionInterfaces.cpp
     core/execution/src/EnvironmentAdapter.cpp
+    core/execution/src/ExecutionContract.cpp
     core/execution/src/ExecutionEngine.cpp
+    core/execution/src/RevealExecutor.cpp
     core/execution/src/ScreenPerception.cpp
     core/intent/src/Intent.cpp
     core/intent/src/IntentNormalizer.cpp
     core/intent/src/IntentResolver.cpp
     core/intent/src/IntentRegistry.cpp
+    core/interaction/src/AIStateView.cpp
     core/interaction/src/InteractionGraph.cpp
+    core/interaction/src/TaskInterface.cpp
     core/observer/src/ObserverEngine.cpp
     core/telemetry/src/Telemetry.cpp
     interface/api/src/IntentApiServer.cpp
+    interface/sdk/src/IEEClient.cpp
 )
 
 target_include_directories(iee_core PUBLIC
@@ -47,6 +52,7 @@ target_include_directories(iee_core PUBLIC
     core/telemetry/include
     interface/api/include
     interface/cli/include
+    interface/sdk/include
 )
 
 target_link_libraries(iee_core PUBLIC
@@ -164,6 +170,12 @@ add_executable(iee_test_scenario_uig_hidden_exposure
 target_include_directories(iee_test_scenario_uig_hidden_exposure PRIVATE tests)
 target_link_libraries(iee_test_scenario_uig_hidden_exposure PRIVATE iee_core)
 
+add_executable(iee_test_scenario_task_interface
+    tests/scenario_task_interface.cpp
+)
+target_include_directories(iee_test_scenario_task_interface PRIVATE tests)
+target_link_libraries(iee_test_scenario_task_interface PRIVATE iee_core)
+
 add_test(NAME unit_capability_extractor COMMAND iee_test_unit_capability)
 add_test(NAME unit_intent_schema COMMAND iee_test_unit_intent)
 add_test(NAME integration_execution_filesystem COMMAND iee_test_integration_execution)
@@ -180,3 +192,4 @@ add_test(NAME stress_screen_pipeline COMMAND iee_test_stress_screen_pipeline)
 add_test(NAME integration_control_runtime COMMAND iee_test_integration_control_runtime)
 add_test(NAME integration_closed_loop_feedback COMMAND iee_test_integration_closed_loop_feedback)
 add_test(NAME scenario_uig_hidden_exposure COMMAND iee_test_scenario_uig_hidden_exposure)
+add_test(NAME scenario_task_interface COMMAND iee_test_scenario_task_interface)
