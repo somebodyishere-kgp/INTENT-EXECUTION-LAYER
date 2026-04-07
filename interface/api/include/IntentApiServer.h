@@ -12,6 +12,7 @@
 #include "ControlRuntime.h"
 #include "DecisionInterfaces.h"
 #include "ExecutionEngine.h"
+#include "InteractionGraph.h"
 #include "IntentRegistry.h"
 #include "Telemetry.h"
 
@@ -39,6 +40,8 @@ private:
     std::chrono::steady_clock::time_point startedAt_;
     mutable std::mutex frameHistoryMutex_;
     std::deque<ScreenState> frameHistory_;
+    mutable std::mutex graphHistoryMutex_;
+    std::deque<InteractionGraph> graphHistory_;
 };
 
 }  // namespace iee

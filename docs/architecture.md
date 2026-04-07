@@ -1,78 +1,77 @@
-# IEE v1.5 Architecture
+# IEE v1.6 Architecture
 
 ## Purpose
-IEE v1.5 extends v1.4 with deterministic screen perception and a unified screen state model. The new layer merges UIA state, lightweight visual detections, and cursor context without introducing heavyweight ML dependencies.
+IEE v1.6 upgrades the Unified Interaction Graph (UIG) from a discovery graph into a production execution graph. Nodes now expose deterministic stable identity, descriptor/state separation, execution plans, reveal strategies for hidden UI, and versioned graph deltas.
 
 ## Runtime Modules
 
-### core/observer
-- Captures active window/process/cursor context and filesystem snapshots.
-- Continues to provide deterministic sequence IDs consumed by execution and telemetry paths.
+### core/accessibility
+- Captures full UIA tree (visible + hidden/offscreen/collapsed nodes).
+- Preserves shortcut metadata and hierarchical parent-child relationships.
+- Continues bounded menu probing for latent command discovery.
 
-### core/execution Environment + Observation Layer
-- `EnvironmentState` now carries:
-  - `screenFrame` (capture metadata)
-  - `screenState` (unified screen model)
-  - `visionTiming` (capture/detection/merge timings)
-- `ObservationPipeline` remains high-frequency and double-buffered, and now tracks vision-specific metrics:
-  - latest frame id
-  - capture/detection/merge latency summaries
-  - estimated observation FPS
+### core/interaction (v1.6)
+- Stable identity contract:
+  - `NodeId { stableId, signature }`
+  - deterministic hashing from UI path, role/type, label, and automation identifier.
+- Split node contracts:
+  - `InteractionDescriptor` (structural/static shape)
+  - `InteractionState` (frame-variant runtime state)
+- Execution-aware graph contracts:
+  - `ExecutionPlan` and `PlanStep`
+  - `RevealStrategy` for hidden/offscreen/collapsed elements
+  - `NodeIntentBinding` (node -> intent action + plan + reveal)
+- Versioning and diff contracts:
+  - `InteractionGraph.version`
+  - `GraphDelta` add/update/remove lists + reset signaling.
 
-### core/execution Screen Perception (new in v1.5)
-- `ScreenCaptureEngine`
-  - DXGI Desktop Duplication first
-  - deterministic fallback to screen-metrics capture metadata when duplication is unavailable
-- `VisualDetector`
-  - lightweight heuristics over UI bounds and spatial occupancy
-  - edge-density proxy, region segmentation, color-cluster bucketing, text-like cues
-- `ScreenStateAssembler`
-  - merges UI and visual candidates
-  - deduplicates by overlap
-  - emits stable element ids and unified signatures
-  - always includes cursor as a first-class screen element
+### core/execution / observation
+- `EnvironmentState.unifiedState` remains canonical merged observation model.
+- Unified state now carries v1.6 UIG metadata in serialized graph payloads.
+- Observation loop behavior remains non-blocking and deterministic.
 
-### core/execution Control Runtime (v1.5 upgrade)
-- Retains v1.4 dual-lane execution model and decision/feedback contracts.
-- Adds observation vision stats to runtime status payload:
-  - latest frame id
-  - last/average capture/detection/merge timings
-  - estimated observation FPS
-- Logs per-frame vision timing samples into telemetry for API/CLI observability.
+### interface/api (v1.6)
+- Existing UIG endpoints preserved and enriched:
+  - `GET /interaction-graph`
+  - `GET /interaction-node/{id}`
+  - `GET /capabilities/full`
+- New delta behavior:
+  - `GET /interaction-graph?delta_since=<version>`
+  - server keeps bounded graph history and returns `GraphDelta`
+  - stale/missing base versions set `reset_required=true`.
+- Node endpoint now surfaces execution-aware payloads:
+  - `execution_plan`
+  - `reveal_strategy`
+  - `intent_binding`.
 
-### core/telemetry (v1.5 upgrade)
-- Adds dedicated vision-latency sample stream:
-  - capture, detection, merge, total
-  - frame id + environment sequence + timestamp
-  - simulated-frame and dropped-frame accounting
-- Adds vision aggregates and JSON serialization (`SerializeVisionJson`).
+### interface/cli (v1.6)
+- Existing commands preserved:
+  - `iee graph`
+  - `iee node <id>`
+  - `iee capabilities --all`
+- New execution-aware commands:
+  - `iee plan <node_id>`
+  - `iee reveal <node_id>`
+- Graph command delta support:
+  - `iee graph --delta_since <version>`
+  - JSON mode emits graph + delta payload.
 
-### interface/api (v1.5 upgrade)
-- New endpoint: `GET /stream/frame`
-  - `mode=full` for complete `ScreenState`
-  - `mode=delta` with optional `since=<frame_id>` for incremental updates
-  - bounded frame history and reset signaling when delta base is unavailable
-- `GET /stream/state` now always includes unified screen state + vision timing.
+## Core Flow (v1.6)
+1. Capture full UIA environment state.
+2. Build deterministic UIG nodes with stable `NodeId` identities.
+3. Build descriptor/state split for each node.
+4. Derive reveal strategy for hidden/offscreen/collapsed nodes.
+5. Generate execution plan and intent binding for every node.
+6. Merge UIG with `ScreenState` into `UnifiedState`.
+7. Expose full graph and node-level execution metadata through API/CLI.
+8. Serve versioned graph deltas for incremental consumers.
 
-### interface/cli (v1.5 upgrade)
-- New command: `iee vision`
-  - table and JSON views for capture/detect/merge/total latency
-  - dropped-frame + simulated-frame + FPS visibility
-
-## Core Flow (v1.5)
-1. Capture synchronized environment state through observation pipeline.
-2. Acquire screen frame metadata through DXGI duplication (or deterministic fallback).
-3. Run lightweight visual detection primitives.
-4. Merge UIA + visual + cursor into unified `ScreenState` with stable ids.
-5. Submit latest state to optional decision worker (non-blocking to frame loop).
-6. Queue and execute intents under frame latency budget.
-7. Capture feedback deltas and schedule bounded corrections when applicable.
-8. Record telemetry traces, phase latency breakdowns, and vision latency aggregates.
-9. Serve deterministic control and observability via CLI and HTTP API (`/stream/state`, `/stream/frame`, `/stream/live`, `/perf`).
+## Determinism and Compatibility
+- Existing v1.5.1 API/CLI routes are preserved.
+- Legacy node fields remain serialized for compatibility while v1.6 contracts are additive.
+- Graph signatures remain deterministic across equivalent frames.
 
 ## Validation Baseline
 - Configure: `cmake -S . -B build`
 - Build: `cmake --build build --config Debug`
 - Tests: `ctest --test-dir build -C Debug --output-on-failure`
-
-Latest verified result: `14/14` tests passing.

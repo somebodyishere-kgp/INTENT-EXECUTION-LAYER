@@ -48,6 +48,11 @@ void CliParser::PrintHelp() {
     std::cout << "  iee list-intents\n";
     std::cout << "  iee execute <intent> --target \"<label>\" [--value \"<value>\"]\n";
     std::cout << "  iee inspect\n";
+    std::cout << "  iee graph [--json] [--delta_since <version>]\n";
+    std::cout << "  iee node <id> [--json]\n";
+    std::cout << "  iee plan <id> [--json]\n";
+    std::cout << "  iee reveal <id> [--json]\n";
+    std::cout << "  iee capabilities [--all] [--json]\n";
     std::cout << "  iee explain --action <intent> --target \"<label>\"\n";
     std::cout << "  iee debug-intents [--json]\n";
     std::cout << "  iee telemetry [--json] [--status <STATUS>] [--adapter <NAME>] [--limit <N>]\n";

@@ -30,6 +30,7 @@ add_library(iee_core
     core/intent/src/IntentNormalizer.cpp
     core/intent/src/IntentResolver.cpp
     core/intent/src/IntentRegistry.cpp
+    core/interaction/src/InteractionGraph.cpp
     core/observer/src/ObserverEngine.cpp
     core/telemetry/src/Telemetry.cpp
     interface/api/src/IntentApiServer.cpp
@@ -41,6 +42,7 @@ target_include_directories(iee_core PUBLIC
     core/event/include
     core/execution/include
     core/intent/include
+    core/interaction/include
     core/observer/include
     core/telemetry/include
     interface/api/include
@@ -114,6 +116,12 @@ add_executable(iee_test_unit_screen_perception
 target_include_directories(iee_test_unit_screen_perception PRIVATE tests)
 target_link_libraries(iee_test_unit_screen_perception PRIVATE iee_core)
 
+add_executable(iee_test_unit_interaction_graph
+    tests/unit_interaction_graph.cpp
+)
+target_include_directories(iee_test_unit_interaction_graph PRIVATE tests)
+target_link_libraries(iee_test_unit_interaction_graph PRIVATE iee_core)
+
 add_executable(iee_test_integration_failure_injection
     tests/integration_failure_injection.cpp
 )
@@ -150,6 +158,12 @@ add_executable(iee_test_integration_closed_loop_feedback
 target_include_directories(iee_test_integration_closed_loop_feedback PRIVATE tests)
 target_link_libraries(iee_test_integration_closed_loop_feedback PRIVATE iee_core)
 
+add_executable(iee_test_scenario_uig_hidden_exposure
+    tests/scenario_uig_hidden_exposure.cpp
+)
+target_include_directories(iee_test_scenario_uig_hidden_exposure PRIVATE tests)
+target_link_libraries(iee_test_scenario_uig_hidden_exposure PRIVATE iee_core)
+
 add_test(NAME unit_capability_extractor COMMAND iee_test_unit_capability)
 add_test(NAME unit_intent_schema COMMAND iee_test_unit_intent)
 add_test(NAME integration_execution_filesystem COMMAND iee_test_integration_execution)
@@ -158,9 +172,11 @@ add_test(NAME unit_adapter_reliability COMMAND iee_test_unit_adapter_reliability
 add_test(NAME unit_telemetry COMMAND iee_test_unit_telemetry)
 add_test(NAME unit_observation_pipeline COMMAND iee_test_unit_observation_pipeline)
 add_test(NAME unit_screen_perception COMMAND iee_test_unit_screen_perception)
+add_test(NAME unit_interaction_graph COMMAND iee_test_unit_interaction_graph)
 add_test(NAME integration_failure_injection COMMAND iee_test_integration_failure_injection)
 add_test(NAME integration_api_hardening COMMAND iee_test_integration_api_hardening)
 add_test(NAME stress_execution_loop COMMAND iee_test_stress_execution)
 add_test(NAME stress_screen_pipeline COMMAND iee_test_stress_screen_pipeline)
 add_test(NAME integration_control_runtime COMMAND iee_test_integration_control_runtime)
 add_test(NAME integration_closed_loop_feedback COMMAND iee_test_integration_closed_loop_feedback)
+add_test(NAME scenario_uig_hidden_exposure COMMAND iee_test_scenario_uig_hidden_exposure)

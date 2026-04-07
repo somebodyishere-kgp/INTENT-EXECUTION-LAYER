@@ -1,60 +1,42 @@
-# Issues and Errors Log (v1.5 Upgrade)
+# Issues and Errors Log (v1.6 Upgrade)
 
 ## Date
-2026-04-06
+2026-04-07
 
-## Resolved During v1.5 Migration
+## Resolved During v1.6 Migration
 
-### 1. CMake Tools configure/build orchestration failure
-- Symptom: `Build_CMakeTools` / `RunCtest_CMakeTools` failed with "Unable to configure the project" and no diagnostics.
-- Root cause: environment-specific VS Code CMake Tools integration fault.
-- Fix: switched to direct `cmake` + `ctest` command path for authoritative verification.
-- Result: full v1.5 build and test validation completed successfully.
+### 1. Legacy-ID assumptions in tests after hashed stable IDs
+- Symptom: tests expected `uia-*` node IDs and failed once stable hashed IDs were introduced.
+- Root cause: v1.5.1 deterministic IDs were string-prefix based and test assertions were hardcoded.
+- Fix: updated tests to resolve nodes by `ui_element_id` and assert stable identity invariants across frames.
+- Result: tests now validate v1.6 identity behavior instead of old ID formatting.
 
-### 2. RECT LONG/int template ambiguity in screen perception
-- Symptom: MSVC template resolution failures for `std::max`/`std::clamp` in `ScreenPerception.cpp`.
-- Root cause: mixed `LONG` (RECT/POINT fields) and `int` arguments in templated comparisons.
-- Fix: explicit casts and typed clamp/max bounds in rect/cursor normalization helpers.
-- Result: new screen perception module compiles cleanly.
+### 2. API node payload insufficient for execution-aware workflows
+- Symptom: `/interaction-node/{id}` exposed only node + mapped intent.
+- Root cause: v1.5.1 schema did not include execution-aware graph contracts.
+- Fix: added `execution_plan`, `reveal_strategy`, and `intent_binding` to node endpoint payload.
+- Result: node endpoint now fully supports execution planning clients.
 
-### 3. Stress threshold instability across host performance profiles
-- Symptom: initial `stress_screen_pipeline` threshold failed intermittently on slower hosts.
-- Root cause: threshold assumed fixed sample volume independent of host timing variance.
-- Fix: aligned stress assertions with explicit 30+ FPS target and sustained sampling guarantees.
-- Result: stress test now validates intended contract without false negatives.
-
-### 4. Frame-stream delta baseline availability
-- Symptom: delta clients can request stale `since` frame ids outside bounded history.
-- Root cause: `/stream/frame` intentionally uses a bounded in-memory history.
-- Fix: endpoint emits `reset_required=true` and includes full state when base frame is unavailable.
-- Result: deterministic client recovery path added.
+### 3. Missing graph delta transport contract
+- Symptom: clients could only fetch full UIG snapshots.
+- Root cause: no graph-version history/delta in API layer.
+- Fix: added graph history buffer and `delta_since` query support on `/interaction-graph`.
+- Result: incremental graph sync path now available with `reset_required` signaling for stale cursors.
 
 ## Current Known Risks (Non-Blocking)
 
-### 1. Flat stream payload schema
-- Current behavior: stream-control parser accepts flat string-valued JSON objects only.
-- Risk: typed/nested payload clients require normalization layer.
+### 1. Reveal strategy execution gap
+- Current behavior: reveal strategies are planned and serialized.
+- Risk: adapter-specific reveal execution guarantees still depend on downstream executor support.
 
-### 2. Heuristic visual detection limits
-- Current behavior: visual perception remains lightweight and deterministic (no OCR/object models).
-- Risk: semantic richness of visual understanding is intentionally limited.
+### 2. Bounded graph-history model
+- Current behavior: graph delta history is bounded to protect memory.
+- Risk: stale clients may require full graph reset when base version expires.
 
-### 3. Macro partial completion semantics
-- Current behavior: sequence execution is deterministic and stop-on-failure capable but non-transactional.
-- Risk: long macros may leave intermediate side effects on failed step.
+### 3. CLI delta horizon
+- Current behavior: CLI delta mode is snapshot-oriented.
+- Risk: long-running historical diff workflows should use API delta endpoint instead.
 
-### 4. Bounded frame-delta history model
-- Current behavior: frame delta uses bounded in-memory history.
-- Risk: long-disconnected clients can require state reset/re-sync.
-
-### 5. Bounded SSE stream session model
-- Current behavior: SSE connection emits bounded events per request (`events` cap).
-- Risk: long-lived fan-out stream scenarios still require brokered streaming infrastructure.
-
-### 6. IDE tooling parity
-- Current behavior: VS Code CMake Tools helper path remains unavailable.
-- Risk: build/test ergonomics in IDE remain degraded despite green command-line verification.
-
-## Environment Notes
-- Command-line verification remains the authoritative path in this environment.
-- Latest validation state: build success + `14/14` test pass.
+### 4. Flat stream-control parser retained
+- Current behavior: stream-control parser remains flat/string-valued by design.
+- Risk: nested/typed payload producers still require normalization.

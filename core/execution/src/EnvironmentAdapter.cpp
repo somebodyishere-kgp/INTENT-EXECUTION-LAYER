@@ -17,6 +17,45 @@ std::size_t HashCombine(std::size_t seed, std::size_t value) {
     return seed ^ (value + static_cast<std::size_t>(0x9e3779b97f4a7c15ULL) + (seed << 6U) + (seed >> 2U));
 }
 
+std::uint64_t BuildUnifiedSignature(const ScreenState& screenState, const InteractionGraph& interactionGraph) {
+    std::size_t signature = static_cast<std::size_t>(0xcbf29ce484222325ULL);
+    signature = HashCombine(signature, std::hash<std::uint64_t>{}(screenState.signature));
+    signature = HashCombine(signature, std::hash<std::uint64_t>{}(interactionGraph.signature));
+    signature = HashCombine(signature, std::hash<std::size_t>{}(screenState.elements.size()));
+    signature = HashCombine(signature, std::hash<std::size_t>{}(interactionGraph.nodes.size()));
+    return static_cast<std::uint64_t>(signature == 0 ? 1 : signature);
+}
+
+void PopulateUnifiedState(EnvironmentState* state, bool forceRebuildInteractionGraph) {
+    if (state == nullptr) {
+        return;
+    }
+
+    if (state->screenState.frameId == 0) {
+        state->screenState.frameId = state->screenFrame.frameId == 0 ? state->sequence : state->screenFrame.frameId;
+    }
+    if (state->screenState.environmentSequence == 0) {
+        state->screenState.environmentSequence = state->sequence;
+    }
+
+    const bool needsGraphRefresh = forceRebuildInteractionGraph ||
+        !state->unifiedState.interactionGraph.valid ||
+        state->unifiedState.interactionGraph.sequence != state->sequence;
+
+    if (needsGraphRefresh) {
+        state->unifiedState.interactionGraph = InteractionGraphBuilder::Build(state->uiElements, state->sequence);
+    }
+
+    state->unifiedState.frameId = state->screenState.frameId;
+    state->unifiedState.environmentSequence = state->sequence;
+    state->unifiedState.capturedAt = state->capturedAt;
+    state->unifiedState.screenState = state->screenState;
+    state->unifiedState.signature =
+        BuildUnifiedSignature(state->unifiedState.screenState, state->unifiedState.interactionGraph);
+    state->unifiedState.valid = state->screenState.valid &&
+        (state->uiElements.empty() || state->unifiedState.interactionGraph.valid);
+}
+
 double RectArea(const RECT& rect) {
     const int width = std::max(0, static_cast<int>(rect.right - rect.left));
     const int height = std::max(0, static_cast<int>(rect.bottom - rect.top));
@@ -103,6 +142,8 @@ void PopulateScreenState(EnvironmentState* state, ScreenCaptureEngine* captureEn
     state->visionTiming.detectionMs = std::chrono::duration_cast<std::chrono::milliseconds>(detectEnd - detectStart).count();
     state->visionTiming.mergeMs = std::chrono::duration_cast<std::chrono::milliseconds>(mergeEnd - mergeStart).count();
     state->visionTiming.totalMs = std::chrono::duration_cast<std::chrono::milliseconds>(mergeEnd - totalStart).count();
+
+    PopulateUnifiedState(state, true);
 }
 
 }  // namespace
@@ -494,6 +535,8 @@ void ObservationPipeline::RunLoop() {
                 if (captured.screenState.environmentSequence == 0) {
                     captured.screenState.environmentSequence = captured.sequence;
                 }
+
+                PopulateUnifiedState(&captured, false);
 
                 const int current = activeBufferIndex_.load(std::memory_order_relaxed);
                 const int next = current == 0 ? 1 : 0;

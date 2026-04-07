@@ -3,8 +3,10 @@
 #include <OleAuto.h>
 #include <comdef.h>
 
+#include <chrono>
 #include <sstream>
 #include <stdexcept>
+#include <thread>
 
 #include "Logger.h"
 
@@ -61,6 +63,10 @@ bool AccessibilityLayer::EnsureAutomation() {
 }
 
 std::vector<UiElement> AccessibilityLayer::CaptureTree(HWND windowHandle) {
+    return CaptureTreeFull(windowHandle);
+}
+
+std::vector<UiElement> AccessibilityLayer::CaptureTreeFull(HWND windowHandle) {
     std::vector<UiElement> elements;
     if (!windowHandle || !EnsureAutomation()) {
         return elements;
@@ -72,7 +78,13 @@ std::vector<UiElement> AccessibilityLayer::CaptureTree(HWND windowHandle) {
         return elements;
     }
 
-    return WalkTree(root.Get(), 0, 8, "");
+    TraversalContext context;
+    context.allowMenuProbe = true;
+    context.expansionsAttempted = 0;
+    context.maxExpansions = 8;
+    context.deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(250);
+
+    return WalkTree(root.Get(), 0, 24, "", &context);
 }
 
 std::optional<UiElement> AccessibilityLayer::FindElementByLabel(HWND windowHandle, const std::wstring& label) {
@@ -152,38 +164,172 @@ bool AccessibilityLayer::Select(HWND windowHandle, const std::wstring& label) {
     return false;
 }
 
-std::vector<UiElement> AccessibilityLayer::WalkTree(IUIAutomationElement* root, int depth, int maxDepth, const std::string& parentId) {
+std::vector<UiElement> AccessibilityLayer::WalkTree(
+    IUIAutomationElement* root,
+    int depth,
+    int maxDepth,
+    const std::string& parentId,
+    TraversalContext* context) {
     std::vector<UiElement> elements;
     if (!root || depth > maxDepth) {
         return elements;
     }
 
     UiElement current = BuildUiElement(root, depth, parentId);
-    elements.push_back(current);
+
+    const std::vector<Microsoft::WRL::ComPtr<IUIAutomationElement>> children =
+        CollectChildrenWithMenuProbe(root, &current, context);
+
+    std::vector<UiElement> descendants;
+    descendants.reserve(children.size() * 2U);
+
+    for (const auto& child : children) {
+        if (!child) {
+            continue;
+        }
+
+        auto childElements = WalkTree(child.Get(), depth + 1, maxDepth, current.id, context);
+        if (!childElements.empty()) {
+            current.children.push_back(childElements.front().id);
+            descendants.insert(descendants.end(), childElements.begin(), childElements.end());
+        }
+    }
+
+    elements.push_back(std::move(current));
+    elements.insert(elements.end(), descendants.begin(), descendants.end());
+
+    return elements;
+}
+
+std::vector<Microsoft::WRL::ComPtr<IUIAutomationElement>> AccessibilityLayer::CollectChildrenWithMenuProbe(
+    IUIAutomationElement* element,
+    UiElement* current,
+    TraversalContext* context) {
+    std::vector<Microsoft::WRL::ComPtr<IUIAutomationElement>> collected;
+    if (element == nullptr) {
+        return collected;
+    }
 
     Microsoft::WRL::ComPtr<IUIAutomationCondition> condition;
     HRESULT hr = automation_->CreateTrueCondition(&condition);
     if (FAILED(hr) || !condition) {
-        return elements;
+        return collected;
     }
 
-    Microsoft::WRL::ComPtr<IUIAutomationElementArray> children;
-    hr = root->FindAll(TreeScope_Children, condition.Get(), &children);
-    if (FAILED(hr) || !children) {
-        return elements;
+    auto collect = [&](std::vector<Microsoft::WRL::ComPtr<IUIAutomationElement>>* output) {
+        output->clear();
+        Microsoft::WRL::ComPtr<IUIAutomationElementArray> children;
+        const HRESULT findHr = element->FindAll(TreeScope_Children, condition.Get(), &children);
+        if (FAILED(findHr) || !children) {
+            return;
+        }
+
+        int length = 0;
+        children->get_Length(&length);
+        if (length > 0) {
+            output->reserve(static_cast<std::size_t>(length));
+        }
+
+        for (int index = 0; index < length; ++index) {
+            Microsoft::WRL::ComPtr<IUIAutomationElement> child;
+            if (SUCCEEDED(children->GetElement(index, &child)) && child) {
+                output->push_back(child);
+            }
+        }
+    };
+
+    collect(&collected);
+
+    if (!collected.empty() || current == nullptr || context == nullptr || !context->allowMenuProbe) {
+        return collected;
     }
 
-    int length = 0;
-    children->get_Length(&length);
-    for (int index = 0; index < length; ++index) {
-        Microsoft::WRL::ComPtr<IUIAutomationElement> child;
-        if (SUCCEEDED(children->GetElement(index, &child)) && child) {
-            auto childElements = WalkTree(child.Get(), depth + 1, maxDepth, current.id);
-            elements.insert(elements.end(), childElements.begin(), childElements.end());
+    if (current->controlType != UiControlType::Menu &&
+        current->controlType != UiControlType::MenuItem &&
+        current->controlType != UiControlType::ComboBox) {
+        return collected;
+    }
+
+    if (!current->isCollapsed || !current->isEnabled) {
+        return collected;
+    }
+
+    if (context->expansionsAttempted >= context->maxExpansions ||
+        std::chrono::steady_clock::now() >= context->deadline) {
+        return collected;
+    }
+
+    bool collapseRequired = false;
+    if (!TryExpandMenuTemporarily(element, &collapseRequired)) {
+        return collected;
+    }
+
+    ++context->expansionsAttempted;
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+
+    collect(&collected);
+    TryRestoreCollapsedMenu(element, collapseRequired);
+    return collected;
+}
+
+bool AccessibilityLayer::TryExpandMenuTemporarily(IUIAutomationElement* element, bool* collapseRequired) {
+    if (collapseRequired != nullptr) {
+        *collapseRequired = false;
+    }
+
+    if (element == nullptr) {
+        return false;
+    }
+
+    Microsoft::WRL::ComPtr<IUIAutomationExpandCollapsePattern> expandCollapse;
+    const HRESULT patternHr = element->GetCurrentPatternAs(
+        UIA_ExpandCollapsePatternId,
+        IID_PPV_ARGS(&expandCollapse));
+
+    if (FAILED(patternHr) || !expandCollapse) {
+        return false;
+    }
+
+    ExpandCollapseState state = ExpandCollapseState_LeafNode;
+    if (FAILED(expandCollapse->get_CurrentExpandCollapseState(&state))) {
+        return false;
+    }
+
+    if (state == ExpandCollapseState_LeafNode) {
+        return false;
+    }
+
+    if (state == ExpandCollapseState_Collapsed || state == ExpandCollapseState_PartiallyExpanded) {
+        if (FAILED(expandCollapse->Expand())) {
+            return false;
+        }
+
+        if (collapseRequired != nullptr) {
+            *collapseRequired = true;
         }
     }
 
-    return elements;
+    return true;
+}
+
+void AccessibilityLayer::TryRestoreCollapsedMenu(IUIAutomationElement* element, bool collapseRequired) {
+    if (!collapseRequired || element == nullptr) {
+        return;
+    }
+
+    Microsoft::WRL::ComPtr<IUIAutomationExpandCollapsePattern> expandCollapse;
+    const HRESULT patternHr = element->GetCurrentPatternAs(
+        UIA_ExpandCollapsePatternId,
+        IID_PPV_ARGS(&expandCollapse));
+
+    if (FAILED(patternHr) || !expandCollapse) {
+        return;
+    }
+
+    const HRESULT collapseHr = expandCollapse->Collapse();
+    if (SUCCEEDED(collapseHr)) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
 }
 
 UiElement AccessibilityLayer::BuildUiElement(IUIAutomationElement* element, int depth, const std::string& parentId) {
@@ -195,10 +341,14 @@ UiElement AccessibilityLayer::BuildUiElement(IUIAutomationElement* element, int 
     _bstr_t name;
     _bstr_t automationId;
     _bstr_t className;
+    _bstr_t accessKey;
+    _bstr_t acceleratorKey;
 
     const HRESULT nameHr = element->get_CurrentName(name.GetAddress());
     const HRESULT automationIdHr = element->get_CurrentAutomationId(automationId.GetAddress());
     const HRESULT classNameHr = element->get_CurrentClassName(className.GetAddress());
+    const HRESULT accessKeyHr = element->get_CurrentAccessKey(accessKey.GetAddress());
+    const HRESULT acceleratorKeyHr = element->get_CurrentAcceleratorKey(acceleratorKey.GetAddress());
 
     CONTROLTYPEID controlTypeId = UIA_CustomControlTypeId;
     element->get_CurrentControlType(&controlTypeId);
@@ -212,9 +362,12 @@ UiElement AccessibilityLayer::BuildUiElement(IUIAutomationElement* element, int 
 
     uiElement.isEnabled = isEnabled != FALSE;
     uiElement.isOffscreen = isOffscreen != FALSE;
+    uiElement.isVisible = !uiElement.isOffscreen;
     uiElement.name = SafeGetBstrProperty(nameHr, name);
     uiElement.automationId = SafeGetBstrProperty(automationIdHr, automationId);
     uiElement.className = SafeGetBstrProperty(classNameHr, className);
+    uiElement.accessKey = SafeGetBstrProperty(accessKeyHr, accessKey);
+    uiElement.acceleratorKey = SafeGetBstrProperty(acceleratorKeyHr, acceleratorKey);
     uiElement.controlType = ControlTypeFromUiaId(controlTypeId);
     uiElement.parentId = parentId;
     uiElement.depth = depth;
@@ -244,6 +397,17 @@ UiElement AccessibilityLayer::BuildUiElement(IUIAutomationElement* element, int 
     if (SUCCEEDED(element->GetCurrentPatternAs(UIA_SelectionItemPatternId, IID_PPV_ARGS(&selectionPattern))) && selectionPattern) {
         uiElement.supportsSelection = true;
     }
+
+    Microsoft::WRL::ComPtr<IUIAutomationExpandCollapsePattern> expandCollapsePattern;
+    if (SUCCEEDED(element->GetCurrentPatternAs(UIA_ExpandCollapsePatternId, IID_PPV_ARGS(&expandCollapsePattern))) &&
+        expandCollapsePattern) {
+        ExpandCollapseState state = ExpandCollapseState_LeafNode;
+        if (SUCCEEDED(expandCollapsePattern->get_CurrentExpandCollapseState(&state))) {
+            uiElement.isCollapsed = (state == ExpandCollapseState_Collapsed || state == ExpandCollapseState_PartiallyExpanded);
+        }
+    }
+
+    uiElement.isHidden = !uiElement.isVisible || !uiElement.isEnabled || uiElement.isCollapsed;
 
     return uiElement;
 }

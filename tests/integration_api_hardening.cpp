@@ -1,4 +1,5 @@
 #include <filesystem>
+#include <cstdint>
 #include <iostream>
 #include <memory>
 #include <sstream>
@@ -25,6 +26,29 @@ public:
         snapshot.activeWindowTitle = L"ApiTest";
         snapshot.activeProcessPath = L"api_test.exe";
         snapshot.cursorPosition = {100, 100};
+
+        iee::UiElement save;
+        save.id = "ui-save";
+        save.name = L"Save";
+        save.controlType = iee::UiControlType::Button;
+        save.isEnabled = true;
+        save.isVisible = true;
+        save.isOffscreen = false;
+        save.bounds = {40, 20, 200, 80};
+
+        iee::UiElement hiddenMenu;
+        hiddenMenu.id = "ui-hidden-export";
+        hiddenMenu.name = L"Export";
+        hiddenMenu.controlType = iee::UiControlType::MenuItem;
+        hiddenMenu.isEnabled = true;
+        hiddenMenu.isVisible = false;
+        hiddenMenu.isOffscreen = true;
+        hiddenMenu.isHidden = true;
+        hiddenMenu.acceleratorKey = L"Ctrl+E";
+        hiddenMenu.bounds = {10, 200, 220, 260};
+
+        snapshot.uiElements.push_back(std::move(save));
+        snapshot.uiElements.push_back(std::move(hiddenMenu));
         return snapshot;
     }
 
@@ -78,6 +102,64 @@ bool HasStatus(const std::string& response, int code) {
     return response.find(marker) != std::string::npos;
 }
 
+std::string ReadJsonStringField(const std::string& payload, const std::string& field) {
+    const std::string marker = "\"" + field + "\":\"";
+    const std::size_t start = payload.find(marker);
+    if (start == std::string::npos) {
+        return "";
+    }
+
+    const std::size_t valueStart = start + marker.size();
+    const std::size_t valueEnd = payload.find('"', valueStart);
+    if (valueEnd == std::string::npos) {
+        return "";
+    }
+
+    return payload.substr(valueStart, valueEnd - valueStart);
+}
+
+std::uint64_t ReadJsonUintField(const std::string& payload, const std::string& field) {
+    const std::string marker = "\"" + field + "\":";
+    const std::size_t start = payload.find(marker);
+    if (start == std::string::npos) {
+        return 0;
+    }
+
+    const std::size_t valueStart = start + marker.size();
+    std::size_t valueEnd = valueStart;
+    while (valueEnd < payload.size() && payload[valueEnd] >= '0' && payload[valueEnd] <= '9') {
+        ++valueEnd;
+    }
+
+    if (valueEnd == valueStart) {
+        return 0;
+    }
+
+    return static_cast<std::uint64_t>(std::stoull(payload.substr(valueStart, valueEnd - valueStart)));
+}
+
+std::string FindNodeIdByUiElementId(const std::string& payload, const std::string& uiElementId) {
+    const std::string marker = "\"ui_element_id\":\"" + uiElementId + "\"";
+    const std::size_t elementPos = payload.find(marker);
+    if (elementPos == std::string::npos) {
+        return "";
+    }
+
+    const std::string idMarker = "\"id\":\"";
+    const std::size_t idPos = payload.rfind(idMarker, elementPos);
+    if (idPos == std::string::npos) {
+        return "";
+    }
+
+    const std::size_t valueStart = idPos + idMarker.size();
+    const std::size_t valueEnd = payload.find('"', valueStart);
+    if (valueEnd == std::string::npos) {
+        return "";
+    }
+
+    return payload.substr(valueStart, valueEnd - valueStart);
+}
+
 }  // namespace
 
 int main() {
@@ -97,6 +179,8 @@ int main() {
         iee::ExecutionEngine engine(adapters, eventBus, validator, telemetry);
 
         iee::IntentApiServer api(registry, engine, telemetry);
+        std::string saveNodeId;
+        std::uint64_t initialGraphVersion = 0;
 
         {
             const std::string response = api.HandleRequestForTesting(BuildHttpRequest("GET", "/health"));
@@ -147,6 +231,51 @@ int main() {
             const std::string response = api.HandleRequestForTesting(BuildHttpRequest("GET", "/capabilities"));
             AssertTrue(HasStatus(response, 200), "GET /capabilities should return 200");
             AssertTrue(response.find("\"capabilities\"") != std::string::npos, "Capabilities response should include capabilities array");
+        }
+
+        {
+            const std::string response = api.HandleRequestForTesting(BuildHttpRequest("GET", "/capabilities/full"));
+            AssertTrue(HasStatus(response, 200), "GET /capabilities/full should return 200");
+            AssertTrue(response.find("\"capabilities\"") != std::string::npos, "Full capabilities should include capabilities array");
+            AssertTrue(response.find("\"hidden_node_count\"") != std::string::npos, "Full capabilities should include hidden node count");
+            AssertTrue(response.find("\"graph_version\"") != std::string::npos, "Full capabilities should include graph version");
+        }
+
+        {
+            const std::string response = api.HandleRequestForTesting(BuildHttpRequest("GET", "/interaction-graph"));
+            AssertTrue(HasStatus(response, 200), "GET /interaction-graph should return 200");
+            AssertTrue(response.find("\"graph\"") != std::string::npos, "Interaction graph response should include graph payload");
+            AssertTrue(response.find("\"version\"") != std::string::npos, "Interaction graph response should include graph version");
+            saveNodeId = FindNodeIdByUiElementId(response, "ui-save");
+            AssertTrue(!saveNodeId.empty(), "Interaction graph should expose stable node ids for ui-save");
+            initialGraphVersion = ReadJsonUintField(response, "version");
+            AssertTrue(initialGraphVersion > 0, "Interaction graph version should be non-zero");
+        }
+
+        {
+            const std::string response = api.HandleRequestForTesting(
+                BuildHttpRequest("GET", "/interaction-node/" + saveNodeId));
+            AssertTrue(HasStatus(response, 200), "GET /interaction-node/{id} should return 200");
+            AssertTrue(response.find("\"node\"") != std::string::npos, "Interaction node response should include node payload");
+            AssertTrue(response.find("\"intent\"") != std::string::npos, "Interaction node response should include deterministic intent payload");
+            AssertTrue(response.find("\"execution_plan\"") != std::string::npos, "Interaction node response should include execution plan");
+            AssertTrue(response.find("\"reveal_strategy\"") != std::string::npos, "Interaction node response should include reveal strategy");
+            AssertTrue(response.find("\"intent_binding\"") != std::string::npos, "Interaction node response should include intent binding");
+        }
+
+        {
+            const std::string response = api.HandleRequestForTesting(
+                BuildHttpRequest("GET", "/interaction-graph?delta_since=" + std::to_string(initialGraphVersion)));
+            AssertTrue(HasStatus(response, 200), "GET /interaction-graph?delta_since should return 200");
+            AssertTrue(response.find("\"delta\"") != std::string::npos, "Delta graph response should include delta payload");
+            AssertTrue(response.find("\"changed\":false") != std::string::npos, "Equivalent frames should produce unchanged graph delta");
+        }
+
+        {
+            const std::string response = api.HandleRequestForTesting(
+                BuildHttpRequest("GET", "/interaction-graph?delta_since=9999999"));
+            AssertTrue(HasStatus(response, 200), "GET /interaction-graph with stale delta_since should return 200");
+            AssertTrue(response.find("\"reset_required\":true") != std::string::npos, "Stale delta_since should request graph reset");
         }
 
         {

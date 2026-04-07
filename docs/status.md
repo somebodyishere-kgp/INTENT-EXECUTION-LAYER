@@ -1,59 +1,52 @@
-# IEE v1.5 Status
+# IEE v1.6 Status
 
 ## Date
-2026-04-06
+2026-04-07
 
 ## Current State
-IEE has been upgraded to v1.5 screen perception + unified screen state. The runtime now fuses UIA observations with lightweight visual detections and cursor context, exposes frame-level streaming with delta support, and adds dedicated vision latency telemetry while preserving v1.4 behavior.
+IEE has been upgraded to v1.6 with a production execution-aware UIG. The graph now provides stable hashed node identity, descriptor/state separation, per-node execution plans, reveal strategies for hidden UI, and versioned graph delta support.
 
-## Completed v1.5 Work
-- Screen capture engine:
-  - added `ScreenCaptureEngine` with DXGI Desktop Duplication attempt path
-  - added deterministic fallback when duplication is unavailable
-  - unified frame metadata (`frameId`, dimensions, simulated/valid flags)
-- Lightweight visual detection:
-  - added `VisualDetector` with deterministic heuristics
-  - includes region segmentation, edge-density proxy, color clustering, text-like hints
-- Unified `ScreenState` model:
-  - added `ScreenElement` and `VisualElement` contracts
-  - merged UIA + visual candidates with overlap-based dedup
-  - stable element id generation and unified screen signature
-  - cursor promoted to explicit screen element in merged state
-- Observation pipeline + runtime integration:
-  - `EnvironmentState` now carries `screenFrame`, `screenState`, `visionTiming`
-  - observation metrics now include latest frame id, capture/detect/merge timings, estimated FPS
-  - control runtime status surfaces vision timing summaries
-- Frame streaming API:
-  - added `GET /stream/frame`
-  - supports `mode=full`
-  - supports `mode=delta` with optional `since=<frame_id>`
-  - includes reset signaling when requested base frame is unavailable
-- Performance and telemetry:
-  - added telemetry-side `VisionLatencySample` logging
-  - added vision aggregate snapshot + serialization (`SerializeVisionJson`)
-  - includes dropped-frame and simulated-frame counters
-- CLI visibility:
-  - added `iee vision` command for human-readable and JSON vision metrics
-- Validation and test expansion:
-  - added `unit_screen_perception`
-  - added `stress_screen_pipeline`
-  - extended `integration_api_hardening` with `/stream/frame` coverage
+## Completed v1.6 Work
+- Stable node identity:
+  - introduced `NodeId { stableId, signature }`
+  - deterministic identity hash from UI path/role/label/automation context
+- Descriptor/state split:
+  - added `InteractionDescriptor` and `InteractionState`
+  - preserved legacy node fields for additive compatibility
+- Execution-aware nodes:
+  - added `ExecutionPlan` and `PlanStep` for each node
+  - added `RevealStrategy` for hidden/offscreen/collapsed targets
+  - added `NodeIntentBinding` to bind node -> action + plan + reveal
+- Graph versioning and delta:
+  - added `InteractionGraph.version`
+  - added `GraphDelta` computation/serialization
+- API expansion (additive):
+  - `GET /interaction-graph` now includes graph version
+  - `GET /interaction-graph?delta_since=<version>` returns bounded-history delta payload
+  - `GET /interaction-node/{id}` now includes execution plan/reveal/binding payloads
+  - `GET /capabilities/full` now includes graph version/signature metadata
+- CLI expansion:
+  - added `iee plan <node_id> [--json]`
+  - added `iee reveal <node_id> [--json]`
+  - extended `iee graph` with `--delta_since` / `--delta`
+- Validation expansion:
+  - updated `unit_interaction_graph` for stable IDs + reveal/plan + delta correctness
+  - updated `scenario_uig_hidden_exposure` for hashed IDs and reveal checks
+  - updated `integration_api_hardening` for dynamic node lookup and delta endpoint checks
 
-## Verification Executed
-- Build:
+## Retained v1.5.1 Behavior
+- Full-tree hidden/offscreen/collapsed UI capture retained.
+- Unified state merge (`ScreenState` + `InteractionGraph`) retained.
+- Existing API/CLI routes remain available.
+- Telemetry, runtime control, and stream endpoints remain compatible.
+
+## Verification
+- Build and tests should be run via:
   - `cmake -S . -B build`
   - `cmake --build build --config Debug`
-- Automated tests:
   - `ctest --test-dir build -C Debug --output-on-failure`
-  - Result: `14/14` passing tests
 
 ## Remaining Non-Blocking Gaps
-- Visual pipeline intentionally avoids heavy OCR/object models; text-like detection is heuristic only.
-- Frame delta history is intentionally bounded; stale `since` pointers can trigger `reset_required`.
-- Stream control JSON parser remains intentionally flat/string-valued for transport hardening.
-- Macro execution remains deterministic but non-transactional for longer sequences.
-- VS Code CMake Tools build/test helper integration remains unavailable in this environment.
-
-## Tooling Note
-- `Build_CMakeTools` and `RunCtest_CMakeTools` failed to configure in this session with empty diagnostics.
-- Authoritative verification was completed through direct `cmake` + `ctest` execution.
+- Reveal strategy remains a deterministic plan contract; adapter-level reveal execution hardening can be expanded.
+- Graph history for API delta is intentionally bounded (reset semantics for stale clients).
+- CLI graph delta is snapshot-local and not long-lived session history.

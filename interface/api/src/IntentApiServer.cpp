@@ -431,6 +431,20 @@ std::string SerializeScreenStateJson(const ScreenState& state) {
     return json.str();
 }
 
+std::string SerializeUnifiedStateJson(const UnifiedState& state) {
+    std::ostringstream json;
+    json << "{";
+    json << "\"frame_id\":" << state.frameId << ",";
+    json << "\"environment_sequence\":" << state.environmentSequence << ",";
+    json << "\"captured_at_ms\":" << EpochMs(state.capturedAt) << ",";
+    json << "\"signature\":" << state.signature << ",";
+    json << "\"valid\":" << (state.valid ? "true" : "false") << ",";
+    json << "\"screen_state\":" << SerializeScreenStateJson(state.screenState) << ",";
+    json << "\"interaction_graph\":" << InteractionGraphBuilder::SerializeGraphJson(state.interactionGraph);
+    json << "}";
+    return json.str();
+}
+
 bool ScreenElementEquivalent(const ScreenElement& left, const ScreenElement& right) {
     const auto sameRect = left.bounds.left == right.bounds.left &&
         left.bounds.top == right.bounds.top &&
@@ -559,6 +573,7 @@ std::string SerializeEnvironmentStateJson(const EnvironmentState& state) {
     json << "]";
     json << "},";
     json << "\"screen_state\":" << SerializeScreenStateJson(state.screenState) << ",";
+    json << "\"unified_state\":" << SerializeUnifiedStateJson(state.unifiedState) << ",";
     json << "\"vision_timing\":{";
     json << "\"capture_ms\":" << state.visionTiming.captureMs << ",";
     json << "\"detection_ms\":" << state.visionTiming.detectionMs << ",";
@@ -805,6 +820,145 @@ bool SendAll(SOCKET socket, const std::string& payload) {
         sent += static_cast<std::size_t>(written);
     }
     return true;
+}
+
+bool ReadQueryBool(
+    const std::unordered_map<std::string, std::string>& query,
+    const std::string& key,
+    bool defaultValue) {
+    const auto it = query.find(key);
+    if (it == query.end()) {
+        return defaultValue;
+    }
+
+    const std::string value = ToAsciiLower(it->second);
+    if (value == "1" || value == "true" || value == "yes" || value == "on") {
+        return true;
+    }
+    if (value == "0" || value == "false" || value == "no" || value == "off") {
+        return false;
+    }
+
+    return defaultValue;
+}
+
+std::string UrlDecode(const std::string& value) {
+    std::string decoded;
+    decoded.reserve(value.size());
+
+    auto hexValue = [](char ch) -> int {
+        if (ch >= '0' && ch <= '9') {
+            return ch - '0';
+        }
+        if (ch >= 'A' && ch <= 'F') {
+            return ch - 'A' + 10;
+        }
+        if (ch >= 'a' && ch <= 'f') {
+            return ch - 'a' + 10;
+        }
+        return -1;
+    };
+
+    for (std::size_t index = 0; index < value.size(); ++index) {
+        const char ch = value[index];
+        if (ch == '%' && (index + 2U) < value.size()) {
+            const int high = hexValue(value[index + 1U]);
+            const int low = hexValue(value[index + 2U]);
+            if (high >= 0 && low >= 0) {
+                decoded.push_back(static_cast<char>((high << 4) | low));
+                index += 2U;
+                continue;
+            }
+        }
+
+        if (ch == '+') {
+            decoded.push_back(' ');
+        } else {
+            decoded.push_back(ch);
+        }
+    }
+
+    return decoded;
+}
+
+bool CaptureEnvironmentState(
+    const std::unique_ptr<ControlRuntime>& controlRuntime,
+    const std::shared_ptr<EnvironmentAdapter>& fallbackAdapter,
+    EnvironmentState* state,
+    bool* runtimeActiveOut) {
+    if (state == nullptr) {
+        return false;
+    }
+
+    const bool runtimeActive = controlRuntime != nullptr && controlRuntime->Status().active;
+    if (runtimeActiveOut != nullptr) {
+        *runtimeActiveOut = runtimeActive;
+    }
+
+    bool captured = false;
+    if (runtimeActive) {
+        captured = controlRuntime->LatestEnvironmentState(state);
+    }
+
+    if (!captured && fallbackAdapter != nullptr) {
+        std::string captureError;
+        captured = fallbackAdapter->CaptureState(state, &captureError);
+    }
+
+    return captured;
+}
+
+void EnsureUnifiedState(EnvironmentState* state) {
+    if (state == nullptr) {
+        return;
+    }
+
+    if (state->perception.regions.empty() && !state->uiElements.empty()) {
+        state->perception = LightweightPerception::Analyze(*state);
+    }
+
+    if (!state->screenFrame.valid) {
+        state->screenFrame.frameId = state->sequence;
+        state->screenFrame.capturedAt = state->capturedAt;
+        state->screenFrame.width = std::max(1, GetSystemMetrics(SM_CXSCREEN));
+        state->screenFrame.height = std::max(1, GetSystemMetrics(SM_CYSCREEN));
+        state->screenFrame.simulated = true;
+        state->screenFrame.valid = true;
+    }
+
+    if (state->screenFrame.frameId == 0) {
+        state->screenFrame.frameId = state->sequence;
+    }
+
+    if (!state->screenState.valid || state->screenState.frameId == 0) {
+        const std::vector<VisualElement> visual = VisualDetector::Detect(state->screenFrame, state->uiElements);
+        state->screenState = ScreenStateAssembler::Build(
+            state->sequence,
+            state->capturedAt,
+            state->cursorPosition,
+            state->uiElements,
+            state->screenFrame,
+            visual);
+    }
+
+    if (state->screenState.environmentSequence == 0) {
+        state->screenState.environmentSequence = state->sequence;
+    }
+
+    const bool rebuildGraph = !state->unifiedState.interactionGraph.valid ||
+        state->unifiedState.interactionGraph.sequence != state->sequence;
+    if (rebuildGraph) {
+        state->unifiedState.interactionGraph = InteractionGraphBuilder::Build(state->uiElements, state->sequence);
+    }
+
+    state->unifiedState.frameId = state->screenState.frameId;
+    state->unifiedState.environmentSequence = state->sequence;
+    state->unifiedState.capturedAt = state->capturedAt;
+    state->unifiedState.screenState = state->screenState;
+    state->unifiedState.signature =
+        state->screenState.signature ^ (state->unifiedState.interactionGraph.signature << 1U);
+    state->unifiedState.valid = state->screenState.valid &&
+        (state->uiElements.empty() || state->unifiedState.interactionGraph.valid);
 }
 
 class HeuristicPredictor final : public Predictor {
@@ -1201,6 +1355,90 @@ std::string IntentApiServer::HandleRequest(const std::string& request) {
         return BuildResponse(200, "OK", json.str());
     }
 
+    if (method == "GET" && path == "/capabilities/full") {
+        bool runtimeActive = false;
+        EnvironmentState state;
+        if (!CaptureEnvironmentState(controlRuntime_, streamEnvironmentAdapter_, &state, &runtimeActive)) {
+            return BuildErrorResponse(
+                503,
+                "Service Unavailable",
+                "capabilities_unavailable",
+                "Unable to capture environment state for full capabilities");
+        }
+
+        EnsureUnifiedState(&state);
+
+        const bool includeHidden = ReadQueryBool(query, "include_hidden", true);
+        const std::size_t limit = ReadQuerySize(query, "limit", 4096U, 1U, 32768U);
+
+        const std::vector<Intent> fullCapabilities = InteractionGraphBuilder::GenerateIntents(
+            state.unifiedState.interactionGraph,
+            includeHidden,
+            limit);
+
+        std::map<std::string, std::size_t> actionCounts;
+        std::size_t hiddenCount = 0;
+        std::size_t offscreenCount = 0;
+        std::size_t collapsedCount = 0;
+
+        for (const auto& entry : state.unifiedState.interactionGraph.nodes) {
+            const InteractionNode& node = entry.second;
+            if (node.hidden) {
+                ++hiddenCount;
+            }
+            if (node.offscreen) {
+                ++offscreenCount;
+            }
+            if (node.collapsed) {
+                ++collapsedCount;
+            }
+        }
+
+        for (const Intent& intent : fullCapabilities) {
+            ++actionCounts[ToString(intent.action)];
+        }
+
+        std::ostringstream json;
+        json << "{";
+        json << "\"runtime_active\":" << (runtimeActive ? "true" : "false") << ",";
+        json << "\"include_hidden\":" << (includeHidden ? "true" : "false") << ",";
+        json << "\"graph_version\":" << state.unifiedState.interactionGraph.version << ",";
+        json << "\"graph_signature\":" << state.unifiedState.interactionGraph.signature << ",";
+        json << "\"node_count\":" << state.unifiedState.interactionGraph.nodes.size() << ",";
+        json << "\"edge_count\":" << state.unifiedState.interactionGraph.edges.size() << ",";
+        json << "\"command_count\":" << state.unifiedState.interactionGraph.commands.size() << ",";
+        json << "\"hidden_node_count\":" << hiddenCount << ",";
+        json << "\"offscreen_node_count\":" << offscreenCount << ",";
+        json << "\"collapsed_node_count\":" << collapsedCount << ",";
+        json << "\"capability_count\":" << fullCapabilities.size() << ",";
+        json << "\"actions\":[";
+
+        bool firstAction = true;
+        for (const auto& entry : actionCounts) {
+            if (!firstAction) {
+                json << ",";
+            }
+            firstAction = false;
+            json << "{";
+            json << "\"action\":\"" << EscapeJson(entry.first) << "\",";
+            json << "\"count\":" << entry.second;
+            json << "}";
+        }
+
+        json << "],";
+        json << "\"capabilities\":[";
+        for (std::size_t index = 0; index < fullCapabilities.size(); ++index) {
+            if (index > 0) {
+                json << ",";
+            }
+            json << fullCapabilities[index].Serialize();
+        }
+        json << "]";
+        json << "}";
+
+        return BuildResponse(200, "OK", json.str());
+    }
+
     if (method == "GET" && path == "/telemetry/persistence") {
         return BuildResponse(200, "OK", telemetry_.SerializePersistenceJson());
     }
@@ -1215,46 +1453,13 @@ std::string IntentApiServer::HandleRequest(const std::string& request) {
     }
 
     if (method == "GET" && path == "/stream/state") {
-        const bool runtimeActive = controlRuntime_ != nullptr && controlRuntime_->Status().active;
-
+        bool runtimeActive = false;
         EnvironmentState state;
-        bool captured = false;
-        if (runtimeActive) {
-            captured = controlRuntime_->LatestEnvironmentState(&state);
-        }
-
-        if (!captured && streamEnvironmentAdapter_ != nullptr) {
-            std::string captureError;
-            captured = streamEnvironmentAdapter_->CaptureState(&state, &captureError);
-        }
-
-        if (!captured) {
+        if (!CaptureEnvironmentState(controlRuntime_, streamEnvironmentAdapter_, &state, &runtimeActive)) {
             return BuildErrorResponse(503, "Service Unavailable", "stream_state_unavailable", "Unable to capture environment state");
         }
 
-        if (state.perception.regions.empty() && !state.uiElements.empty()) {
-            state.perception = LightweightPerception::Analyze(state);
-        }
-
-        if (!state.screenFrame.valid) {
-            state.screenFrame.frameId = state.sequence;
-            state.screenFrame.capturedAt = state.capturedAt;
-            state.screenFrame.width = std::max(1, GetSystemMetrics(SM_CXSCREEN));
-            state.screenFrame.height = std::max(1, GetSystemMetrics(SM_CYSCREEN));
-            state.screenFrame.simulated = true;
-            state.screenFrame.valid = true;
-        }
-
-        if (!state.screenState.valid || state.screenState.frameId == 0) {
-            const std::vector<VisualElement> visual = VisualDetector::Detect(state.screenFrame, state.uiElements);
-            state.screenState = ScreenStateAssembler::Build(
-                state.sequence,
-                state.capturedAt,
-                state.cursorPosition,
-                state.uiElements,
-                state.screenFrame,
-                visual);
-        }
+        EnsureUnifiedState(&state);
 
         std::ostringstream json;
         json << "{";
@@ -1270,49 +1475,13 @@ std::string IntentApiServer::HandleRequest(const std::string& request) {
     }
 
     if (method == "GET" && path == "/stream/frame") {
-        const bool runtimeActive = controlRuntime_ != nullptr && controlRuntime_->Status().active;
-
+        bool runtimeActive = false;
         EnvironmentState state;
-        bool captured = false;
-        if (runtimeActive) {
-            captured = controlRuntime_->LatestEnvironmentState(&state);
-        }
-
-        if (!captured && streamEnvironmentAdapter_ != nullptr) {
-            std::string captureError;
-            captured = streamEnvironmentAdapter_->CaptureState(&state, &captureError);
-        }
-
-        if (!captured) {
+        if (!CaptureEnvironmentState(controlRuntime_, streamEnvironmentAdapter_, &state, &runtimeActive)) {
             return BuildErrorResponse(503, "Service Unavailable", "stream_frame_unavailable", "Unable to capture screen state");
         }
 
-        if (!state.screenFrame.valid) {
-            state.screenFrame.frameId = state.sequence;
-            state.screenFrame.capturedAt = state.capturedAt;
-            state.screenFrame.width = std::max(1, GetSystemMetrics(SM_CXSCREEN));
-            state.screenFrame.height = std::max(1, GetSystemMetrics(SM_CYSCREEN));
-            state.screenFrame.simulated = true;
-            state.screenFrame.valid = true;
-        }
-        if (state.screenFrame.frameId == 0) {
-            state.screenFrame.frameId = state.sequence;
-        }
-
-        if (!state.screenState.valid || state.screenState.frameId == 0) {
-            const std::vector<VisualElement> visual = VisualDetector::Detect(state.screenFrame, state.uiElements);
-            state.screenState = ScreenStateAssembler::Build(
-                state.sequence,
-                state.capturedAt,
-                state.cursorPosition,
-                state.uiElements,
-                state.screenFrame,
-                visual);
-        }
-
-        if (state.screenState.environmentSequence == 0) {
-            state.screenState.environmentSequence = state.sequence;
-        }
+        EnsureUnifiedState(&state);
 
         VisionLatencySample visionSample;
         visionSample.frameId = state.screenState.frameId;
@@ -1398,6 +1567,131 @@ std::string IntentApiServer::HandleRequest(const std::string& request) {
         if (runtimeActive) {
             json << ",\"control_status\":" << ControlRuntime::SerializeSnapshotJson(controlRuntime_->Status());
         }
+        json << "}";
+
+        return BuildResponse(200, "OK", json.str());
+    }
+
+    if (method == "GET" && path == "/interaction-graph") {
+        bool runtimeActive = false;
+        EnvironmentState state;
+        if (!CaptureEnvironmentState(controlRuntime_, streamEnvironmentAdapter_, &state, &runtimeActive)) {
+            return BuildErrorResponse(
+                503,
+                "Service Unavailable",
+                "interaction_graph_unavailable",
+                "Unable to capture interaction graph state");
+        }
+
+        EnsureUnifiedState(&state);
+
+        const InteractionGraph& currentGraph = state.unifiedState.interactionGraph;
+        const auto deltaSinceIt = query.find("delta_since");
+        const bool deltaRequested = deltaSinceIt != query.end();
+
+        std::uint64_t deltaSinceVersion = 0;
+        if (deltaRequested) {
+            ParseUint64(deltaSinceIt->second, &deltaSinceVersion);
+        }
+
+        GraphDelta delta;
+        bool includeDelta = false;
+
+        {
+            std::lock_guard<std::mutex> lock(graphHistoryMutex_);
+
+            if (graphHistory_.empty() ||
+                graphHistory_.back().version != currentGraph.version ||
+                graphHistory_.back().signature != currentGraph.signature) {
+                graphHistory_.push_back(currentGraph);
+                while (graphHistory_.size() > 128U) {
+                    graphHistory_.pop_front();
+                }
+            }
+
+            if (deltaRequested) {
+                includeDelta = true;
+
+                if (deltaSinceVersion == 0) {
+                    InteractionGraph emptyGraph;
+                    delta = InteractionGraphBuilder::ComputeDelta(emptyGraph, currentGraph);
+                    delta.fromVersion = 0;
+                    delta.toVersion = currentGraph.version;
+                } else if (deltaSinceVersion == currentGraph.version) {
+                    delta.fromVersion = deltaSinceVersion;
+                    delta.toVersion = currentGraph.version;
+                    delta.changed = false;
+                } else {
+                    bool foundBase = false;
+                    for (const InteractionGraph& historical : graphHistory_) {
+                        if (historical.version == deltaSinceVersion) {
+                            delta = InteractionGraphBuilder::ComputeDelta(historical, currentGraph);
+                            foundBase = true;
+                            break;
+                        }
+                    }
+
+                    if (!foundBase) {
+                        delta.fromVersion = deltaSinceVersion;
+                        delta.toVersion = currentGraph.version;
+                        delta.changed = true;
+                        delta.resetRequired = true;
+                    }
+                }
+            }
+        }
+
+        std::ostringstream json;
+        json << "{";
+        json << "\"runtime_active\":" << (runtimeActive ? "true" : "false") << ",";
+        json << "\"frame_id\":" << state.unifiedState.frameId << ",";
+        json << "\"sequence\":" << state.sequence << ",";
+        json << "\"signature\":" << state.unifiedState.signature << ",";
+        json << "\"version\":" << currentGraph.version << ",";
+        json << "\"graph\":" << InteractionGraphBuilder::SerializeGraphJson(currentGraph);
+        if (includeDelta) {
+            json << ",\"delta_since\":" << deltaSinceVersion << ",";
+            json << "\"delta\":" << InteractionGraphBuilder::SerializeDeltaJson(delta);
+        }
+        json << "}";
+        return BuildResponse(200, "OK", json.str());
+    }
+
+    if (method == "GET" && path.rfind("/interaction-node/", 0) == 0) {
+        const std::string rawNodeId = path.substr(std::string("/interaction-node/").size());
+        const std::string nodeId = UrlDecode(rawNodeId);
+        if (nodeId.empty()) {
+            return BuildErrorResponse(400, "Bad Request", "missing_node_id", "Missing interaction node id");
+        }
+
+        bool runtimeActive = false;
+        EnvironmentState state;
+        if (!CaptureEnvironmentState(controlRuntime_, streamEnvironmentAdapter_, &state, &runtimeActive)) {
+            return BuildErrorResponse(
+                503,
+                "Service Unavailable",
+                "interaction_node_unavailable",
+                "Unable to capture interaction graph state");
+        }
+
+        EnsureUnifiedState(&state);
+
+        const auto node = InteractionGraphBuilder::FindNode(state.unifiedState.interactionGraph, nodeId);
+        if (!node.has_value()) {
+            return BuildErrorResponse(404, "Not Found", "node_not_found", "Interaction node id was not found");
+        }
+
+        const Intent mappedIntent = InteractionGraphBuilder::GenerateIntent(*node);
+
+        std::ostringstream json;
+        json << "{";
+        json << "\"runtime_active\":" << (runtimeActive ? "true" : "false") << ",";
+        json << "\"sequence\":" << state.sequence << ",";
+        json << "\"node\":" << InteractionGraphBuilder::SerializeNodeJson(*node) << ",";
+        json << "\"intent\":" << mappedIntent.Serialize() << ",";
+        json << "\"execution_plan\":" << InteractionGraphBuilder::SerializeExecutionPlanJson(node->executionPlan) << ",";
+        json << "\"reveal_strategy\":" << InteractionGraphBuilder::SerializeRevealStrategyJson(node->revealStrategy) << ",";
+        json << "\"intent_binding\":" << InteractionGraphBuilder::SerializeIntentBindingJson(node->intentBinding);
         json << "}";
 
         return BuildResponse(200, "OK", json.str());

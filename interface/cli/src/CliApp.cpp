@@ -9,9 +9,11 @@
 #include <iomanip>
 #include <iostream>
 #include <limits>
+#include <map>
 #include <string>
 #include <system_error>
 
+#include "InteractionGraph.h"
 #include "Intent.h"
 #include "IntentApiServer.h"
 
@@ -173,6 +175,27 @@ ExplainInput ParseExplainInput(const ParsedCommand& command) {
     return input;
 }
 
+InteractionGraph BuildLatestInteractionGraph(IntentRegistry& intentRegistry, ObserverSnapshot* snapshotOut = nullptr) {
+    intentRegistry.Refresh();
+    const ObserverSnapshot snapshot = intentRegistry.LastSnapshot();
+    if (snapshotOut != nullptr) {
+        *snapshotOut = snapshot;
+    }
+    if (!snapshot.valid) {
+        return InteractionGraph{};
+    }
+
+    return InteractionGraphBuilder::Build(snapshot.uiElements, snapshot.sequence);
+}
+
+std::string ResolveNodeIdArgument(const ParsedCommand& command) {
+    std::string nodeId = ReadOption(command, "id");
+    if (nodeId.empty() && !command.positionals.empty()) {
+        nodeId = command.positionals.front();
+    }
+    return nodeId;
+}
+
 }  // namespace
 
 CliApp::CliApp(IntentRegistry& intentRegistry, ExecutionEngine& executionEngine, Telemetry& telemetry)
@@ -196,6 +219,26 @@ int CliApp::Run(int argc, char* argv[]) {
 
     if (command.command == "inspect") {
         return HandleInspect();
+    }
+
+    if (command.command == "graph") {
+        return HandleGraph(command);
+    }
+
+    if (command.command == "node") {
+        return HandleNode(command);
+    }
+
+    if (command.command == "plan") {
+        return HandlePlan(command);
+    }
+
+    if (command.command == "reveal") {
+        return HandleReveal(command);
+    }
+
+    if (command.command == "capabilities") {
+        return HandleCapabilities(command);
     }
 
     if (command.command == "explain") {
@@ -376,6 +419,396 @@ int CliApp::HandleInspect() {
     return 0;
 }
 
+int CliApp::HandleGraph(const ParsedCommand& command) {
+    ObserverSnapshot snapshot;
+    const InteractionGraph graph = BuildLatestInteractionGraph(intentRegistry_, &snapshot);
+    if (!snapshot.valid || !graph.valid) {
+        std::cerr << "Unable to capture interaction graph from the current environment\n";
+        return 1;
+    }
+
+    bool deltaRequested = false;
+    std::uint64_t deltaSinceVersion = 0;
+
+    std::string deltaSince = ReadOption(command, "delta_since");
+    if (!deltaSince.empty()) {
+        deltaRequested = true;
+    }
+
+    if (!deltaRequested && HasOption(command, "delta")) {
+        deltaRequested = true;
+        const std::string deltaValue = ReadOption(command, "delta");
+        if (!deltaValue.empty() && deltaValue != "true") {
+            deltaSince = deltaValue;
+        }
+    }
+
+    if (!deltaSince.empty()) {
+        const auto [ptr, error] = std::from_chars(
+            deltaSince.data(),
+            deltaSince.data() + deltaSince.size(),
+            deltaSinceVersion);
+        if (error != std::errc() || ptr != deltaSince.data() + deltaSince.size()) {
+            deltaSinceVersion = 0;
+        }
+    }
+
+    GraphDelta delta;
+    if (deltaRequested) {
+        if (deltaSinceVersion == 0) {
+            InteractionGraph emptyGraph;
+            delta = InteractionGraphBuilder::ComputeDelta(emptyGraph, graph);
+            delta.fromVersion = 0;
+            delta.toVersion = graph.version;
+        } else if (deltaSinceVersion == graph.version) {
+            delta.fromVersion = deltaSinceVersion;
+            delta.toVersion = graph.version;
+            delta.changed = false;
+        } else {
+            delta.fromVersion = deltaSinceVersion;
+            delta.toVersion = graph.version;
+            delta.changed = true;
+            delta.resetRequired = true;
+        }
+    }
+
+    if (HasOption(command, "json")) {
+        if (!deltaRequested) {
+            std::cout << InteractionGraphBuilder::SerializeGraphJson(graph) << "\n";
+            return 0;
+        }
+
+        std::cout << "{";
+        std::cout << "\"graph\":" << InteractionGraphBuilder::SerializeGraphJson(graph) << ",";
+        std::cout << "\"delta_since\":" << deltaSinceVersion << ",";
+        std::cout << "\"delta\":" << InteractionGraphBuilder::SerializeDeltaJson(delta);
+        std::cout << "}" << "\n";
+        return 0;
+    }
+
+    std::size_t hiddenCount = 0;
+    std::size_t offscreenCount = 0;
+    std::size_t collapsedCount = 0;
+    for (const auto& entry : graph.nodes) {
+        const InteractionNode& node = entry.second;
+        hiddenCount += node.hidden ? 1U : 0U;
+        offscreenCount += node.offscreen ? 1U : 0U;
+        collapsedCount += node.collapsed ? 1U : 0U;
+    }
+
+    std::vector<std::string> sortedIds;
+    sortedIds.reserve(graph.nodes.size());
+    for (const auto& entry : graph.nodes) {
+        sortedIds.push_back(entry.first);
+    }
+    std::sort(sortedIds.begin(), sortedIds.end());
+
+    const std::size_t maxRows = ReadSizeOption(command, "limit", 20U, 500U);
+
+    std::cout << "Interaction graph\n";
+    std::cout << "  Sequence         : " << graph.sequence << "\n";
+    std::cout << "  Version          : " << graph.version << "\n";
+    std::cout << "  Signature        : " << graph.signature << "\n";
+    std::cout << "  Nodes            : " << graph.nodes.size() << "\n";
+    std::cout << "  Edges            : " << graph.edges.size() << "\n";
+    std::cout << "  Commands         : " << graph.commands.size() << "\n";
+    std::cout << "  Hidden           : " << hiddenCount << "\n";
+    std::cout << "  Offscreen        : " << offscreenCount << "\n";
+    std::cout << "  Collapsed        : " << collapsedCount << "\n";
+
+    if (deltaRequested) {
+        std::cout << "  Delta from       : " << delta.fromVersion << "\n";
+        std::cout << "  Delta changed    : " << (delta.changed ? "true" : "false") << "\n";
+        std::cout << "  Reset required   : " << (delta.resetRequired ? "true" : "false") << "\n";
+        std::cout << "  Added nodes      : " << delta.addedNodes.size() << "\n";
+        std::cout << "  Updated nodes    : " << delta.updatedNodes.size() << "\n";
+        std::cout << "  Removed nodes    : " << delta.removedNodes.size() << "\n";
+    }
+
+    std::cout << "\nSample nodes\n";
+    std::cout << std::left << std::setw(32) << "NODE_ID"
+              << std::setw(12) << "TYPE"
+              << std::setw(8) << "VIS"
+              << std::setw(8) << "EN"
+              << "LABEL\n";
+    std::cout << std::string(80, '-') << "\n";
+
+    const std::size_t rows = std::min<std::size_t>(maxRows, sortedIds.size());
+    for (std::size_t index = 0; index < rows; ++index) {
+        const auto it = graph.nodes.find(sortedIds[index]);
+        if (it == graph.nodes.end()) {
+            continue;
+        }
+
+        const InteractionNode& node = it->second;
+        const std::string label = node.label.empty() ? "<unnamed>" : node.label;
+        std::cout << std::left << std::setw(32) << node.id.substr(0, std::min<std::size_t>(31U, node.id.size()))
+                  << std::setw(12) << node.type
+                  << std::setw(8) << (node.visible ? "yes" : "no")
+                  << std::setw(8) << (node.enabled ? "yes" : "no")
+                  << label
+                  << "\n";
+    }
+
+    if (rows < sortedIds.size()) {
+        std::cout << "... " << (sortedIds.size() - rows) << " more nodes (use --limit N or --json).\n";
+    }
+
+    return 0;
+}
+
+int CliApp::HandleNode(const ParsedCommand& command) {
+    const std::string nodeId = ResolveNodeIdArgument(command);
+
+    if (nodeId.empty()) {
+        std::cerr << "Usage: iee node <id> [--json]\n";
+        return 1;
+    }
+
+    ObserverSnapshot snapshot;
+    const InteractionGraph graph = BuildLatestInteractionGraph(intentRegistry_, &snapshot);
+    if (!snapshot.valid || !graph.valid) {
+        std::cerr << "Unable to capture interaction graph from the current environment\n";
+        return 1;
+    }
+
+    const auto node = InteractionGraphBuilder::FindNode(graph, nodeId);
+    if (!node.has_value()) {
+        std::cerr << "Node not found: " << nodeId << "\n";
+        return 1;
+    }
+
+    const Intent mappedIntent = InteractionGraphBuilder::GenerateIntent(*node);
+
+    if (HasOption(command, "json")) {
+        std::cout << "{";
+        std::cout << "\"node\":" << InteractionGraphBuilder::SerializeNodeJson(*node) << ",";
+        std::cout << "\"intent\":" << mappedIntent.Serialize() << ",";
+        std::cout << "\"execution_plan\":" << InteractionGraphBuilder::SerializeExecutionPlanJson(node->executionPlan) << ",";
+        std::cout << "\"reveal_strategy\":" << InteractionGraphBuilder::SerializeRevealStrategyJson(node->revealStrategy) << ",";
+        std::cout << "\"intent_binding\":" << InteractionGraphBuilder::SerializeIntentBindingJson(node->intentBinding);
+        std::cout << "}" << "\n";
+        return 0;
+    }
+
+    std::cout << "Interaction node\n";
+    std::cout << "  ID         : " << node->id << "\n";
+    std::cout << "  Stable ID  : " << node->nodeId.stableId << "\n";
+    std::cout << "  Node Sig   : " << node->nodeId.signature << "\n";
+    std::cout << "  Type       : " << node->type << "\n";
+    std::cout << "  Label      : " << (node->label.empty() ? "<unnamed>" : node->label) << "\n";
+    std::cout << "  Parent     : " << (node->parentId.empty() ? "<root>" : node->parentId) << "\n";
+    std::cout << "  Visible    : " << (node->visible ? "true" : "false") << "\n";
+    std::cout << "  Enabled    : " << (node->enabled ? "true" : "false") << "\n";
+    std::cout << "  Hidden     : " << (node->hidden ? "true" : "false") << "\n";
+    std::cout << "  Offscreen  : " << (node->offscreen ? "true" : "false") << "\n";
+    std::cout << "  Collapsed  : " << (node->collapsed ? "true" : "false") << "\n";
+    std::cout << "  Shortcut   : " << (node->shortcut.empty() ? "<none>" : node->shortcut) << "\n";
+    std::cout << "  Plan       : " << node->executionPlan.id << " ("
+              << (node->executionPlan.executable ? "executable" : "non-executable") << ")\n";
+    std::cout << "  Plan steps : " << node->executionPlan.steps.size() << "\n";
+    std::cout << "  Reveal req : " << (node->revealStrategy.required ? "true" : "false") << "\n";
+    std::cout << "  Reveal stp : " << node->revealStrategy.steps.size() << "\n";
+    std::cout << "\nMapped intent\n";
+    std::cout << "  Action     : " << ToString(mappedIntent.action) << "\n";
+    std::cout << "  Source     : " << mappedIntent.source << "\n";
+    std::cout << "  Confidence : " << std::fixed << std::setprecision(2) << mappedIntent.confidence << "\n";
+    return 0;
+}
+
+int CliApp::HandlePlan(const ParsedCommand& command) {
+    const std::string nodeId = ResolveNodeIdArgument(command);
+    if (nodeId.empty()) {
+        std::cerr << "Usage: iee plan <id> [--json]\n";
+        return 1;
+    }
+
+    ObserverSnapshot snapshot;
+    const InteractionGraph graph = BuildLatestInteractionGraph(intentRegistry_, &snapshot);
+    if (!snapshot.valid || !graph.valid) {
+        std::cerr << "Unable to capture interaction graph from the current environment\n";
+        return 1;
+    }
+
+    const auto plan = InteractionGraphBuilder::GetExecutionPlan(graph, nodeId);
+    if (!plan.has_value()) {
+        std::cerr << "Node not found: " << nodeId << "\n";
+        return 1;
+    }
+
+    if (HasOption(command, "json")) {
+        std::cout << InteractionGraphBuilder::SerializeExecutionPlanJson(*plan) << "\n";
+        return 0;
+    }
+
+    std::cout << "Execution plan\n";
+    std::cout << "  Node       : " << nodeId << "\n";
+    std::cout << "  Plan ID    : " << plan->id << "\n";
+    std::cout << "  Executable : " << (plan->executable ? "true" : "false") << "\n";
+    std::cout << "  Reason     : " << plan->reason << "\n";
+    std::cout << "  Steps      : " << plan->steps.size() << "\n";
+
+    if (!plan->steps.empty()) {
+        std::cout << "\n";
+        std::cout << std::left << std::setw(22) << "STEP_ID"
+                  << std::setw(20) << "ACTION"
+                  << std::setw(36) << "TARGET"
+                  << "ARG\n";
+        std::cout << std::string(98, '-') << "\n";
+
+        for (const PlanStep& step : plan->steps) {
+            std::cout << std::left << std::setw(22) << step.id.substr(0, std::min<std::size_t>(21U, step.id.size()))
+                      << std::setw(20) << step.action
+                      << std::setw(36) << step.targetId.substr(0, std::min<std::size_t>(35U, step.targetId.size()))
+                      << (step.argument.empty() ? "<none>" : step.argument)
+                      << "\n";
+        }
+    }
+
+    return 0;
+}
+
+int CliApp::HandleReveal(const ParsedCommand& command) {
+    const std::string nodeId = ResolveNodeIdArgument(command);
+    if (nodeId.empty()) {
+        std::cerr << "Usage: iee reveal <id> [--json]\n";
+        return 1;
+    }
+
+    ObserverSnapshot snapshot;
+    const InteractionGraph graph = BuildLatestInteractionGraph(intentRegistry_, &snapshot);
+    if (!snapshot.valid || !graph.valid) {
+        std::cerr << "Unable to capture interaction graph from the current environment\n";
+        return 1;
+    }
+
+    const auto reveal = InteractionGraphBuilder::GetRevealStrategy(graph, nodeId);
+    if (!reveal.has_value()) {
+        std::cerr << "Node not found: " << nodeId << "\n";
+        return 1;
+    }
+
+    if (HasOption(command, "json")) {
+        std::cout << InteractionGraphBuilder::SerializeRevealStrategyJson(*reveal) << "\n";
+        return 0;
+    }
+
+    std::cout << "Reveal strategy\n";
+    std::cout << "  Node       : " << nodeId << "\n";
+    std::cout << "  Required   : " << (reveal->required ? "true" : "false") << "\n";
+    std::cout << "  Guaranteed : " << (reveal->guaranteed ? "true" : "false") << "\n";
+    std::cout << "  Reason     : " << reveal->reason << "\n";
+    std::cout << "  Steps      : " << reveal->steps.size() << "\n";
+
+    if (!reveal->steps.empty()) {
+        std::cout << "\n";
+        std::cout << std::left << std::setw(22) << "STEP_ID"
+                  << std::setw(24) << "ACTION"
+                  << "TARGET\n";
+        std::cout << std::string(82, '-') << "\n";
+
+        for (const PlanStep& step : reveal->steps) {
+            std::cout << std::left << std::setw(22) << step.id.substr(0, std::min<std::size_t>(21U, step.id.size()))
+                      << std::setw(24) << step.action
+                      << step.targetId
+                      << "\n";
+        }
+    }
+
+    return 0;
+}
+
+int CliApp::HandleCapabilities(const ParsedCommand& command) {
+    if (!HasOption(command, "all")) {
+        intentRegistry_.Refresh();
+        const auto intents = intentRegistry_.ListIntents();
+
+        if (HasOption(command, "json")) {
+            std::cout << "[";
+            for (std::size_t index = 0; index < intents.size(); ++index) {
+                if (index > 0) {
+                    std::cout << ",";
+                }
+                std::cout << intents[index].Serialize();
+            }
+            std::cout << "]\n";
+            return 0;
+        }
+
+        std::map<std::string, std::size_t> actionCounts;
+        for (const Intent& intent : intents) {
+            ++actionCounts[ToString(intent.action)];
+        }
+
+        std::cout << "Capabilities (registered adapters)\n";
+        std::cout << "  Total intents: " << intents.size() << "\n";
+        for (const auto& entry : actionCounts) {
+            std::cout << "  - " << entry.first << ": " << entry.second << "\n";
+        }
+        std::cout << "Use --all to include hidden/offscreen/collapsed graph nodes.\n";
+        return 0;
+    }
+
+    ObserverSnapshot snapshot;
+    const InteractionGraph graph = BuildLatestInteractionGraph(intentRegistry_, &snapshot);
+    if (!snapshot.valid || !graph.valid) {
+        std::cerr << "Unable to capture interaction graph from the current environment\n";
+        return 1;
+    }
+
+    const std::size_t limit = ReadSizeOption(command, "limit", 4096U, 32768U);
+    const std::vector<Intent> intents = InteractionGraphBuilder::GenerateIntents(graph, true, limit);
+
+    if (HasOption(command, "json")) {
+        std::cout << "{";
+        std::cout << "\"count\":" << intents.size() << ",";
+        std::cout << "\"capabilities\":[";
+        for (std::size_t index = 0; index < intents.size(); ++index) {
+            if (index > 0) {
+                std::cout << ",";
+            }
+            std::cout << intents[index].Serialize();
+        }
+        std::cout << "]";
+        std::cout << "}\n";
+        return 0;
+    }
+
+    std::size_t hiddenCount = 0;
+    for (const auto& entry : graph.nodes) {
+        hiddenCount += entry.second.hidden ? 1U : 0U;
+    }
+
+    std::cout << "Capabilities (full interaction graph)\n";
+    std::cout << "  Total capabilities : " << intents.size() << "\n";
+    std::cout << "  Graph nodes        : " << graph.nodes.size() << "\n";
+    std::cout << "  Hidden nodes       : " << hiddenCount << "\n";
+    std::cout << "  Commands           : " << graph.commands.size() << "\n";
+
+    const std::size_t rows = std::min<std::size_t>(20U, intents.size());
+    if (rows > 0) {
+        std::cout << "\nSample intents\n";
+        std::cout << std::left << std::setw(12) << "ACTION"
+                  << std::setw(36) << "NODE_ID"
+                  << std::setw(10) << "SOURCE"
+                  << "TARGET\n";
+        std::cout << std::string(88, '-') << "\n";
+        for (std::size_t index = 0; index < rows; ++index) {
+            const Intent& intent = intents[index];
+            std::cout << std::left << std::setw(12) << ToString(intent.action)
+                      << std::setw(36) << intent.target.nodeId.substr(0, std::min<std::size_t>(35U, intent.target.nodeId.size()))
+                      << std::setw(10) << intent.source
+                      << ToNarrow(intent.target.label)
+                      << "\n";
+        }
+        if (rows < intents.size()) {
+            std::cout << "... " << (intents.size() - rows) << " more intents (use --json for full list).\n";
+        }
+    }
+
+    return 0;
+}
+
 int CliApp::HandleExplain(const ParsedCommand& command) {
     const ExplainInput input = ParseExplainInput(command);
     if (input.action == IntentAction::Unknown || input.target.empty()) {
@@ -452,9 +885,11 @@ int CliApp::HandleApi(const ParsedCommand& command) {
 
     std::cout << "Starting IEE local API on 127.0.0.1:" << port << "\n";
     std::cout << "Routes: GET /health, GET /intents, GET /capabilities, GET /control/status, "
+                 "GET /capabilities/full, GET /interaction-graph, GET /interaction-node/{id}, "
                  "GET /telemetry/persistence, GET /stream/state, GET /stream/frame, GET /stream/live, GET /perf, "
                  "POST /execute, POST /predict, POST /explain, POST /control/start, POST /control/stop, "
                  "POST /stream/control\n";
+    std::cout << "Graph delta query: GET /interaction-graph?delta_since=<version>\n";
     if (singleRequest) {
         std::cout << "Mode: single request\n";
     }

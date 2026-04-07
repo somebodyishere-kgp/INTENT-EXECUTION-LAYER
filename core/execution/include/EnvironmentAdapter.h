@@ -15,6 +15,7 @@
 
 #include "ObserverEngine.h"
 #include "ScreenPerception.h"
+#include "InteractionGraph.h"
 
 namespace iee {
 
@@ -35,6 +36,16 @@ struct EnvironmentPerception {
     std::vector<EnvironmentRegion> regions;
 };
 
+struct UnifiedState {
+    std::uint64_t frameId{0};
+    std::uint64_t environmentSequence{0};
+    std::chrono::system_clock::time_point capturedAt{std::chrono::system_clock::now()};
+    std::uint64_t signature{0};
+    ScreenState screenState;
+    InteractionGraph interactionGraph;
+    bool valid{false};
+};
+
 struct EnvironmentState {
     std::uint64_t sequence{0};
     std::uint64_t sourceSnapshotVersion{0};
@@ -47,6 +58,7 @@ struct EnvironmentState {
     EnvironmentPerception perception;
     ScreenFrame screenFrame;
     ScreenState screenState;
+    UnifiedState unifiedState;
     VisionTiming visionTiming;
     bool simulated{false};
     bool valid{false};

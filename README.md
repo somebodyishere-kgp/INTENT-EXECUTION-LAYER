@@ -25,6 +25,52 @@ This repository now includes:
 - IEE v1.3: environment-aware real-time control
 - IEE v1.4: decision + feedback + prediction layer
 - IEE v1.5: screen perception + unified screen state
+- IEE v1.5.1: unified interaction graph + hidden UI exposure
+- IEE v1.6: production execution-aware UIG + graph versioning/deltas
+
+## v1.6 Highlights
+
+- Stable node identity:
+  - deterministic `NodeId { stableId, signature }` for cross-frame consistency
+  - hash-based identity from UI path/role/label/automation context
+- Execution-aware graph model:
+  - `InteractionDescriptor` + `InteractionState` split
+  - per-node `ExecutionPlan`, `RevealStrategy`, and `NodeIntentBinding`
+- API expansion:
+  - `GET /interaction-graph` now includes graph version metadata
+  - `GET /interaction-graph?delta_since=<version>` returns bounded-history graph delta payloads
+  - `GET /interaction-node/{id}` now includes execution plan/reveal/binding payloads
+- CLI expansion:
+  - `iee graph --delta_since <version>`
+  - `iee plan <node_id>`
+  - `iee reveal <node_id>`
+- Validation expansion:
+  - stable identity + reveal/plan/delta tests in unit/scenario/API hardening suites
+
+## v1.5.1 Highlights
+
+- Full-tree UI ingestion:
+  - captures visible + hidden/offscreen/collapsed/disabled nodes
+  - bounded menu probe path for latent menu/combobox child discovery
+- Unified Interaction Graph (UIG):
+  - deterministic node IDs and signatures
+  - explicit edge model and latent command nodes (shortcut/access-key derived)
+  - deterministic node-to-intent mapping helpers
+- Unified runtime state:
+  - `UnifiedState` merges `ScreenState` + `InteractionGraph`
+  - `/stream/state` includes `unified_state`
+- API expansion:
+  - `GET /interaction-graph`
+  - `GET /interaction-node/{id}`
+  - `GET /capabilities/full`
+- CLI expansion:
+  - `iee graph`
+  - `iee node <id>`
+  - `iee capabilities --all`
+- Additional validation:
+  - `unit_interaction_graph`
+  - `scenario_uig_hidden_exposure`
+  - API hardening coverage for UIG endpoints
 
 ## v1.5 Highlights
 
@@ -65,7 +111,11 @@ Observer -> Intent Registry ---------> Execution Engine -> Adapter Runtime
                        |            |
                        |      Visual Detector
                        |            |
-                       +----> Unified ScreenState (UIA + visual + cursor)
+                +----> Unified ScreenState (UIA + visual + cursor)
+                        |
+                        +----> Interaction Graph Builder (full UI tree + commands)
+                                |
+                                +----> UnifiedState (screen + interaction graph)
 
 Predictor hook -> /predict and runtime prediction surfaces
 
@@ -117,6 +167,21 @@ ctest --test-dir build -C Debug --output-on-failure
 # inspect runtime state
 ./build/Debug/iee.exe inspect
 
+# inspect interaction graph and a node mapping
+./build/Debug/iee.exe graph
+./build/Debug/iee.exe graph --json
+./build/Debug/iee.exe node <node_id>
+
+# inspect execution plan + reveal strategy for a node
+./build/Debug/iee.exe plan <node_id>
+./build/Debug/iee.exe reveal <node_id>
+
+# inspect graph delta from a prior graph version
+./build/Debug/iee.exe graph --delta_since 1001 --json
+
+# list full capabilities including hidden nodes
+./build/Debug/iee.exe capabilities --all
+
 # explain deterministic resolution ranking
 ./build/Debug/iee.exe explain --action activate --target "Save"
 
@@ -156,6 +221,9 @@ Available routes:
 - `GET /health`
 - `GET /intents`
 - `GET /capabilities`
+- `GET /capabilities/full`
+- `GET /interaction-graph`
+- `GET /interaction-node/{id}`
 - `GET /telemetry/persistence`
 - `GET /control/status`
 - `GET /stream/state`
@@ -192,6 +260,12 @@ Example frame stream query:
 GET /stream/frame?mode=delta&since=42
 ```
 
+Example interaction-graph delta query:
+
+```text
+GET /interaction-graph?delta_since=1001
+```
+
 Example prediction payload:
 
 ```json
@@ -225,6 +299,8 @@ Key validations include:
 - high-frequency execution latency distribution
 - observation pipeline behavior
 - unified screen-state capture/detect/merge behavior
+- interaction graph hidden/offscreen/command extraction behavior
+- unified-state interaction graph consistency across frames
 - frame stream full/delta API behavior
 - stream state/control and macro execution paths
 - live SSE stream route and performance contract endpoint
@@ -252,11 +328,11 @@ Primary docs:
 
 Suggested GitHub About description:
 
-`Deterministic C++ intent execution runtime with real-time control, unified screen state, and low-latency observability APIs.`
+`Deterministic C++ intent execution runtime with production execution-aware interaction graphs, real-time control, and low-latency observability APIs.`
 
 Suggested topics:
 
-`intent-execution`, `automation-runtime`, `c-plus-plus`, `windows`, `deterministic-systems`, `real-time-control`, `telemetry`, `screen-perception`
+`intent-execution`, `automation-runtime`, `c-plus-plus`, `windows`, `deterministic-systems`, `real-time-control`, `telemetry`, `screen-perception`, `interaction-graph`, `accessibility`
 
 ## License
 
