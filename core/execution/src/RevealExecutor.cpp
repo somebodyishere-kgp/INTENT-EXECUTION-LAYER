@@ -49,6 +49,7 @@ RevealExecutionResult RevealExecutor::Execute(const InteractionNode& node, int m
         bool stepCompleted = false;
 
         if (step.action == "probe_visibility") {
+            ++result.totalStepAttempts;
             const auto probeNode = LookupNode(node.id);
             stepCompleted = probeNode.has_value() && IsNodeRevealed(*probeNode);
         } else {
@@ -57,6 +58,11 @@ RevealExecutionResult RevealExecutor::Execute(const InteractionNode& node, int m
                 const InteractionNode stepTarget = targetNode.value_or(node);
 
                 ExecutionResult revealStep = executionEngine_.Execute(BuildRevealIntent(node, stepTarget, step));
+                ++result.totalStepAttempts;
+                if (revealStep.usedFallback) {
+                    result.fallbackUsed = true;
+                    ++result.fallbackStepCount;
+                }
                 result.stepResults.push_back(revealStep);
 
                 if (revealStep.IsSuccess()) {

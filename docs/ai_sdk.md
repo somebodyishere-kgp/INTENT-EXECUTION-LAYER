@@ -1,12 +1,13 @@
-# IEE v1.7 AI SDK and Task Interface
+# IEE v1.8 AI SDK and Task Interface
 
 ## Purpose
-IEE v1.7 introduces an additive AI-facing interface layer for deterministic planning and execution.
+IEE v1.8 extends the additive AI-facing layer with deterministic score decomposition, AI state filter modes, trace retrieval, and machine-output CLI behavior.
 
 This layer is composed of:
 
 - `IEEClient` for stateless state retrieval and execution
 - `TaskRequest` + `TaskPlanner` for planning-only task decomposition
+- `PlanScore` for deterministic candidate ranking explanation
 - `AIStateView` for compact model-facing state projection
 - `ExecutionContract` + `RevealExecutor` for reveal-aware guaranteed execution
 
@@ -36,7 +37,7 @@ Primary API:
 - normalized `Intent`
 - `ExecutionContractResult` with reveal and verification status
 
-## Task Interface
+## Task Interface (v1.8)
 
 Header: `core/interaction/include/TaskInterface.h`
 
@@ -44,6 +45,7 @@ Task primitives:
 
 - `TaskRequest`
 - `TaskPlanCandidate`
+- `PlanScore`
 - `TaskPlanResult`
 - `TaskPlanner`
 
@@ -53,17 +55,39 @@ Planner behavior:
 - optional hidden-node planning
 - domain bias (`generic`, `presentation`, `browser`)
 - stable `task_id` derived from request + graph version
+- per-candidate score decomposition:
+  - `relevance`
+  - `execution_cost`
+  - `success_probability`
+  - `total`
 
-## API Additions
+Planner JSON includes:
 
-New routes:
+- legacy `candidates`
+- ranked `plans: [{ plan, score }]`
+
+## API Additions (v1.8)
+
+Routes:
 
 - `GET /state/ai`
 - `POST /task/plan`
+- `GET /trace/{trace_id}`
 
-Updated route:
+`GET /state/ai` filter query options:
 
-- `GET /perf?strict=true` now includes strict pass/fail metrics and returns `409 Conflict` when strict mode fails.
+- `filter=interactive`
+- `filter=visible`
+- `filter=relevant`
+- `goal=<text>`
+- `domain=generic|presentation|browser`
+- `top_n=<1..64>`
+- `include_hidden=true|false`
+
+`GET /perf?strict=true` now includes:
+
+- strict status fields
+- `sample_activation_seeded` when strict mode bootstraps an empty sample window
 
 ## Execution Guarantee Layer
 
@@ -79,27 +103,35 @@ Contract flow:
 3. Execute intent through `ExecutionEngine`
 4. Enforce verification outcome
 
-When verification fails, contract status is marked failed even if adapter dispatch completed.
+v1.8 reveal metadata includes:
 
-## CLI Quickstart
+- `reveal_total_step_attempts`
+- `reveal_fallback_used`
+- `reveal_fallback_step_count`
+- execution-level `used_fallback`
+
+## CLI Quickstart (v1.8)
 
 ```powershell
-# inspect strict performance contract
-./build/Debug/iee.exe perf --target_ms 16 --strict
+# pure JSON machine mode
+./build/Release/iee.exe state/ai --pure-json
 
-# deterministic planning demos
-./build/Debug/iee.exe demo presentation
-./build/Debug/iee.exe demo browser --json
+# deterministic planning demos with score decomposition
+./build/Release/iee.exe demo presentation --pure-json
+./build/Release/iee.exe demo browser --pure-json
 
-# optional execution attempt via contract
-./build/Debug/iee.exe demo presentation --run
+# pure-json execute result
+./build/Release/iee.exe execute create --path notes.txt --pure-json
+
+# strict perf snapshot
+./build/Release/iee.exe perf --strict --json
 ```
 
-## API Quickstart
+## API Quickstart (v1.8)
 
 ```powershell
 # start local API
-./build/Debug/iee.exe api --port 8787
+./build/Release/iee.exe api --port 8787
 ```
 
 Task planning payload:
@@ -117,7 +149,9 @@ Task planning payload:
 Sample endpoints:
 
 ```text
-GET  /state/ai
+GET  /state/ai?filter=relevant&goal=export%20menu&domain=presentation&top_n=5
 POST /task/plan
-GET  /perf?target_ms=16&strict=true
+POST /execute
+GET  /trace/{trace_id}
+GET  /perf?strict=true
 ```

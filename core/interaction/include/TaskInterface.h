@@ -22,11 +22,19 @@ struct TaskRequest {
     std::size_t maxPlans{3};
 };
 
+struct PlanScore {
+    double relevance{0.0};
+    double executionCost{0.0};
+    double successProbability{0.0};
+    double total{0.0};
+};
+
 struct TaskPlanCandidate {
     std::string nodeId;
     std::string label;
     std::string action;
     double score{0.0};
+    PlanScore planScore;
     bool hidden{false};
     bool requiresReveal{false};
     ExecutionPlan executionPlan;
@@ -48,6 +56,7 @@ public:
     static TaskDomain ParseDomain(const std::string& value);
     static std::string ToString(TaskDomain domain);
     static std::string SerializeJson(const TaskPlanResult& result);
+    static std::string SerializeRankedPlansJson(const TaskPlanResult& result);
 };
 
 }  // namespace iee

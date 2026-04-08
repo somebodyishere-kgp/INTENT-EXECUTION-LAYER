@@ -21,6 +21,7 @@ namespace iee {
 struct ExecutionResult {
     ExecutionStatus status{ExecutionStatus::FAILED};
     bool verified{false};
+    bool usedFallback{false};
     std::string method;
     std::string message;
     std::chrono::milliseconds duration{0};
@@ -107,6 +108,24 @@ private:
     Intent BuildIntentFromElement(const UiElement& element, const ObserverSnapshot& snapshot, IntentAction action) const;
 
     IAccessibilityLayer& accessibilityLayer_;
+};
+
+class VSCodeAdapter : public Adapter {
+public:
+    explicit VSCodeAdapter(IAccessibilityLayer& accessibilityLayer);
+
+    std::string Name() const override;
+    std::vector<Intent> GetCapabilities(const ObserverSnapshot& snapshot, const CapabilityGraph& graph) override;
+    bool CanExecute(const Intent& intent) const override;
+    ExecutionResult Execute(const Intent& intent) override;
+    AdapterScore GetScore() const override;
+
+private:
+    static bool IsVsCodeSnapshot(const ObserverSnapshot& snapshot);
+    static bool IsVsCodeIntent(const Intent& intent);
+    static bool IsVsCodeTargetHint(const std::wstring& value);
+
+    UIAAdapter delegate_;
 };
 
 class InputAdapter : public Adapter {

@@ -123,38 +123,101 @@ double DomainAffinity(TaskDomain domain, const std::vector<std::string>& tokens)
     return 0.0;
 }
 
-double ScoreNode(
+double WeightedRelevance(
+    const std::vector<std::string>& tokens,
+    const std::vector<std::string>& goalTokens,
+    const std::vector<std::string>& targetTokens,
+    TaskDomain domain) {
+    double relevance = 0.0;
+    relevance += 0.45 * KeywordCoverage(tokens, goalTokens);
+    relevance += 0.35 * KeywordCoverage(tokens, targetTokens);
+    relevance += 0.20 * DomainAffinity(domain, tokens);
+    return std::clamp(relevance, 0.0, 1.0);
+}
+
+double EstimateExecutionCost(const InteractionNode& node) {
+    const double visibilityPenalty =
+        (node.hidden ? 0.18 : 0.0) +
+        (node.offscreen ? 0.12 : 0.0) +
+        (node.collapsed ? 0.12 : 0.0);
+    const double revealPenalty = node.revealStrategy.required ? 0.20 : 0.0;
+    const double executablePenalty = node.executionPlan.executable ? 0.0 : 0.45;
+    const double stepPenalty = std::min(0.25, static_cast<double>(node.executionPlan.steps.size()) * 0.04);
+
+    return std::clamp(0.10 + visibilityPenalty + revealPenalty + executablePenalty + stepPenalty, 0.0, 1.0);
+}
+
+double EstimateSuccessProbability(const InteractionNode& node, double relevance, double executionCost) {
+    double success = 0.35;
+    success += 0.45 * relevance;
+    success += 0.20 * (1.0 - executionCost);
+
+    if (node.executionPlan.executable) {
+        success += 0.10;
+    }
+
+    if (node.hidden || node.offscreen || node.collapsed) {
+        success -= 0.08;
+    }
+
+    if (node.revealStrategy.required) {
+        success += node.revealStrategy.guaranteed ? 0.03 : -0.05;
+    }
+
+    return std::clamp(success, 0.0, 1.0);
+}
+
+PlanScore ScoreNode(
     const TaskRequest& request,
     const std::vector<std::string>& goalTokens,
     const std::vector<std::string>& targetTokens,
     const InteractionNode& node) {
+    PlanScore planScore;
+
     if (!request.allowHidden && node.hidden) {
-        return -1.0;
+        planScore.executionCost = 1.0;
+        planScore.total = -1.0;
+        return planScore;
     }
 
     const std::string corpus = ToAsciiLower(node.label + " " + node.shortcut + " " + node.type);
     const std::vector<std::string> tokens = Tokenize(corpus);
 
-    double score = 0.0;
-    score += 0.40 * KeywordCoverage(tokens, goalTokens);
-    score += 0.35 * KeywordCoverage(tokens, targetTokens);
-    score += 0.20 * DomainAffinity(request.domain, tokens);
+    planScore.relevance = WeightedRelevance(tokens, goalTokens, targetTokens, request.domain);
+    planScore.executionCost = EstimateExecutionCost(node);
+    planScore.successProbability = EstimateSuccessProbability(node, planScore.relevance, planScore.executionCost);
+    planScore.total = std::clamp(
+        (0.60 * planScore.relevance) +
+            (0.25 * planScore.successProbability) +
+            (0.15 * (1.0 - planScore.executionCost)),
+        0.0,
+        1.0);
+    return planScore;
+}
 
-    if (node.executionPlan.executable) {
-        score += 0.10;
-    } else {
-        score -= 0.20;
-    }
+std::string SerializePlanScoreJson(const PlanScore& score) {
+    std::ostringstream json;
+    json << "{";
+    json << "\"relevance\":" << score.relevance << ",";
+    json << "\"execution_cost\":" << score.executionCost << ",";
+    json << "\"success_probability\":" << score.successProbability << ",";
+    json << "\"total\":" << score.total;
+    json << "}";
+    return json.str();
+}
 
-    if (node.hidden || node.offscreen || node.collapsed) {
-        score -= 0.05;
-    }
-
-    if (!node.label.empty()) {
-        score += 0.05;
-    }
-
-    return std::clamp(score, 0.0, 1.0);
+std::string SerializePlanDescriptorJson(const TaskPlanCandidate& candidate) {
+    std::ostringstream json;
+    json << "{";
+    json << "\"node_id\":\"" << EscapeJson(candidate.nodeId) << "\",";
+    json << "\"label\":\"" << EscapeJson(candidate.label) << "\",";
+    json << "\"action\":\"" << EscapeJson(candidate.action) << "\",";
+    json << "\"hidden\":" << (candidate.hidden ? "true" : "false") << ",";
+    json << "\"requires_reveal\":" << (candidate.requiresReveal ? "true" : "false") << ",";
+    json << "\"execution_plan\":" << InteractionGraphBuilder::SerializeExecutionPlanJson(candidate.executionPlan) << ",";
+    json << "\"reveal_strategy\":" << InteractionGraphBuilder::SerializeRevealStrategyJson(candidate.revealStrategy);
+    json << "}";
+    return json.str();
 }
 
 std::uint64_t StableHash(std::string_view value) {
@@ -214,8 +277,8 @@ TaskPlanResult TaskPlanner::Plan(const TaskRequest& request, const InteractionGr
             continue;
         }
 
-        const double score = ScoreNode(request, goalTokens, targetTokens, *node);
-        if (score <= 0.0) {
+        const PlanScore planScore = ScoreNode(request, goalTokens, targetTokens, *node);
+        if (planScore.total <= 0.0) {
             continue;
         }
 
@@ -223,7 +286,8 @@ TaskPlanResult TaskPlanner::Plan(const TaskRequest& request, const InteractionGr
         candidate.nodeId = node->id;
         candidate.label = node->label;
         candidate.action = iee::ToString(node->intentBinding.action);
-        candidate.score = score;
+        candidate.score = planScore.total;
+        candidate.planScore = planScore;
         candidate.hidden = node->hidden;
         candidate.requiresReveal = node->revealStrategy.required;
         candidate.executionPlan = node->executionPlan;
@@ -232,10 +296,10 @@ TaskPlanResult TaskPlanner::Plan(const TaskRequest& request, const InteractionGr
     }
 
     std::sort(result.candidates.begin(), result.candidates.end(), [](const TaskPlanCandidate& left, const TaskPlanCandidate& right) {
-        if (left.score == right.score) {
+        if (left.planScore.total == right.planScore.total) {
             return left.nodeId < right.nodeId;
         }
-        return left.score > right.score;
+        return left.planScore.total > right.planScore.total;
     });
 
     const std::size_t boundedMaxPlans = std::clamp<std::size_t>(request.maxPlans, 1U, 8U);
@@ -247,7 +311,10 @@ TaskPlanResult TaskPlanner::Plan(const TaskRequest& request, const InteractionGr
         result.summary = "No deterministic candidate matched the requested task";
     } else {
         const TaskPlanCandidate& first = result.candidates.front();
-        result.summary = "Best candidate: " + first.nodeId + " (" + first.action + ")";
+        std::ostringstream summary;
+        summary << "Best candidate: " << first.nodeId << " (" << first.action << ", score=" << std::fixed
+                << std::setprecision(3) << first.planScore.total << ")";
+        result.summary = summary.str();
     }
 
     return result;
@@ -297,6 +364,7 @@ std::string TaskPlanner::SerializeJson(const TaskPlanResult& result) {
         json << "\"label\":\"" << EscapeJson(candidate.label) << "\",";
         json << "\"action\":\"" << EscapeJson(candidate.action) << "\",";
         json << "\"score\":" << candidate.score << ",";
+        json << "\"plan_score\":" << SerializePlanScoreJson(candidate.planScore) << ",";
         json << "\"hidden\":" << (candidate.hidden ? "true" : "false") << ",";
         json << "\"requires_reveal\":" << (candidate.requiresReveal ? "true" : "false") << ",";
         json << "\"execution_plan\":" << InteractionGraphBuilder::SerializeExecutionPlanJson(candidate.executionPlan) << ",";
@@ -304,8 +372,29 @@ std::string TaskPlanner::SerializeJson(const TaskPlanResult& result) {
         json << "}";
     }
 
-    json << "]";
+    json << "],";
+    json << "\"plans\":" << SerializeRankedPlansJson(result);
     json << "}";
+    return json.str();
+}
+
+std::string TaskPlanner::SerializeRankedPlansJson(const TaskPlanResult& result) {
+    std::ostringstream json;
+    json << "[";
+
+    for (std::size_t index = 0; index < result.candidates.size(); ++index) {
+        if (index > 0) {
+            json << ",";
+        }
+
+        const TaskPlanCandidate& candidate = result.candidates[index];
+        json << "{";
+        json << "\"plan\":" << SerializePlanDescriptorJson(candidate) << ",";
+        json << "\"score\":" << SerializePlanScoreJson(candidate.planScore);
+        json << "}";
+    }
+
+    json << "]";
     return json.str();
 }
 

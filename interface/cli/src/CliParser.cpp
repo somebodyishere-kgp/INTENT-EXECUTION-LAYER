@@ -44,7 +44,11 @@ ParsedCommand CliParser::Parse(int argc, char* argv[]) {
 
 void CliParser::PrintHelp() {
     std::cout << "Intent Execution Engine (IEE) CLI\n\n";
+    std::cout << "Global options:\n";
+    std::cout << "  --pure-json    force structured JSON output and disable runtime log noise\n\n";
     std::cout << "Commands:\n";
+    std::cout << "  iee state [--json]\n";
+    std::cout << "  iee state/ai [--json]\n";
     std::cout << "  iee list-intents\n";
     std::cout << "  iee execute <intent> --target \"<label>\" [--value \"<value>\"]\n";
     std::cout << "  iee inspect\n";

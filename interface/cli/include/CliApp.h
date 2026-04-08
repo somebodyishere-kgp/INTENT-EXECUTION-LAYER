@@ -14,9 +14,10 @@ public:
     int Run(int argc, char* argv[]);
 
 private:
-    int HandleListIntents();
+    int HandleState(const ParsedCommand& command, bool aiView);
+    int HandleListIntents(const ParsedCommand& command);
     int HandleExecute(const ParsedCommand& command);
-    int HandleInspect();
+    int HandleInspect(const ParsedCommand& command);
     int HandleExplain(const ParsedCommand& command);
     int HandleDebugIntents(const ParsedCommand& command);
     int HandleApi(const ParsedCommand& command);

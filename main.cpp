@@ -29,6 +29,7 @@ int main(int argc, char* argv[]) {
         iee::Telemetry telemetry;
 
         iee::AdapterRegistry adapterRegistry;
+        adapterRegistry.Register(std::make_unique<iee::VSCodeAdapter>(accessibilityLayer));
         adapterRegistry.Register(std::make_unique<iee::UIAAdapter>(accessibilityLayer));
         adapterRegistry.Register(std::make_unique<iee::InputAdapter>());
         adapterRegistry.Register(std::make_unique<iee::FileSystemAdapter>());

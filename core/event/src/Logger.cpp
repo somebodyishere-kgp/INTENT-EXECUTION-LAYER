@@ -1,5 +1,6 @@
 #include "Logger.h"
 
+#include <atomic>
 #include <chrono>
 #include <ctime>
 #include <iomanip>
@@ -11,6 +12,7 @@ namespace iee {
 namespace {
 
 std::mutex g_logMutex;
+std::atomic<bool> g_logEnabled{true};
 
 const char* LevelToText(LogLevel level) {
     switch (level) {
@@ -43,7 +45,19 @@ std::string BuildTimestamp() {
 
 }  // namespace
 
+void Logger::SetEnabled(bool enabled) {
+    g_logEnabled.store(enabled);
+}
+
+bool Logger::Enabled() {
+    return g_logEnabled.load();
+}
+
 void Logger::Log(LogLevel level, std::string_view source, std::string_view message) {
+    if (!g_logEnabled.load()) {
+        return;
+    }
+
     std::lock_guard<std::mutex> lock(g_logMutex);
     std::cout << "[" << BuildTimestamp() << "]"
               << "[" << LevelToText(level) << "]"

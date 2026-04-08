@@ -1,7 +1,49 @@
-# IEE v1.7 Architecture
+# IEE v1.8 Architecture
 
 ## Purpose
-IEE v1.7 adds an AI-facing interface layer on top of the v1.6 production execution graph. The system now includes stateless SDK access (`IEEClient`), deterministic task planning (`TaskPlanner`), reveal-hardening execution contracts (`ExecutionContract`), and compact model-facing state projection (`AIStateView`).
+IEE v1.8 extends the v1.7 AI-facing layer with deterministic ranking semantics, specialized adapter selection, trace retrieval APIs, and machine-output CLI behavior. The system now includes structured `PlanScore` ranking, query-time AI state filtering, VS Code specialized adapter routing, reveal metadata v2, and strict perf sample activation.
+
+## v1.8 Additions
+
+### Intelligent Planning Score Contract
+- `TaskPlanCandidate` now carries:
+  - `PlanScore.relevance`
+  - `PlanScore.executionCost`
+  - `PlanScore.successProbability`
+  - `PlanScore.total`
+- `TaskPlanner` ranking order now uses `PlanScore.total` with deterministic tie-breaks.
+- Planner JSON now includes:
+  - per-candidate `plan_score`
+  - ranked `plans: [{ plan, score }]` payload.
+
+### AI State Filtering
+- `GET /state/ai` adds deterministic filter projection:
+  - `filter=interactive`
+  - `filter=visible`
+  - `filter=relevant&goal=...&domain=...&top_n=...`
+- Filter payload includes mode, goal, domain, truncation metadata, and ranked node list.
+
+### Adapter Specialization
+- Added `VSCodeAdapter`:
+  - wraps `UIAAdapter` behavior for VS Code contexts
+  - uses specialized score profile for deterministic preference
+  - preserves fallback path to generic adapters.
+
+### Reveal Metadata v2
+- Reveal execution now tracks:
+  - `totalStepAttempts`
+  - `fallbackUsed`
+  - `fallbackStepCount`
+- `/execute` now exposes reveal v2 fields and execution-level `used_fallback` metadata.
+
+### Trace and Perf Surfaces
+- Added `GET /trace/{trace_id}` API route backed by telemetry trace lookup.
+- `GET /perf?strict=true` now seeds bounded synthetic latency samples when the sample window is empty and reports `sample_activation_seeded`.
+
+### CLI Machine Mode
+- Added global CLI option `--pure-json`:
+  - suppresses logger output
+  - forces structured JSON output across command handlers.
 
 ## Runtime Modules
 
@@ -43,7 +85,7 @@ IEE v1.7 adds an AI-facing interface layer on top of the v1.6 production executi
 - Unified state now carries v1.6 UIG metadata in serialized graph payloads.
 - Observation loop behavior remains non-blocking and deterministic.
 
-### interface/api (v1.7)
+### interface/api (v1.8)
 - Existing UIG endpoints preserved and enriched:
   - `GET /interaction-graph`
   - `GET /interaction-node/{id}`
@@ -59,12 +101,15 @@ IEE v1.7 adds an AI-facing interface layer on top of the v1.6 production executi
 - New AI/task endpoints:
   - `GET /state/ai`
   - `POST /task/plan` (planning-only)
+  - `GET /trace/{trace_id}`
 - Performance strict mode:
   - `GET /perf?strict=true` returns explicit strict status and can return conflict on budget breach.
+  - strict mode can activate synthetic sample seed and report `sample_activation_seeded`.
 - Execute contract metadata:
   - `POST /execute` responses now include contract/reveal stage details.
+  - v1.8 adds reveal fallback metadata and execution fallback flag.
 
-### interface/cli (v1.7)
+### interface/cli (v1.8)
 - Existing commands preserved:
   - `iee graph`
   - `iee node <id>`
@@ -77,6 +122,8 @@ IEE v1.7 adds an AI-facing interface layer on top of the v1.6 production executi
   - JSON mode emits graph + delta payload.
 - AI/task commands:
   - `iee demo presentation|browser [--json] [--run]`
+- Global machine-output mode:
+  - `--pure-json`
 - Performance strict mode:
   - `iee perf --strict`
 
@@ -86,7 +133,7 @@ IEE v1.7 adds an AI-facing interface layer on top of the v1.6 production executi
   - `IEEClient::GetStateAiJson()`
   - `IEEClient::Execute(...)` through `ExecutionContract`.
 
-## Core Flow (v1.7)
+## Core Flow (v1.8)
 1. Capture full UIA environment state.
 2. Build deterministic UIG nodes with stable `NodeId` identities.
 3. Build descriptor/state split for each node.
@@ -95,8 +142,10 @@ IEE v1.7 adds an AI-facing interface layer on top of the v1.6 production executi
 6. Merge UIG with `ScreenState` into `UnifiedState`.
 7. Project compact AI state view (`AIStateView`) for model consumers.
 8. Plan high-level goals into deterministic candidates (`TaskPlanner`).
-9. Enforce reveal-aware execution guarantees through `ExecutionContract`.
-10. Expose AI/task/contract metadata through API/CLI/SDK.
+9. Rank candidates by structured `PlanScore` and expose ranked plan envelopes.
+10. Enforce reveal-aware execution guarantees through `ExecutionContract`.
+11. Surface trace lookup, strict perf activation metadata, and machine-readable CLI outputs.
+12. Expose AI/task/contract metadata through API/CLI/SDK.
 
 ## Determinism and Compatibility
 - Existing v1.5.1 and v1.6 API/CLI routes are preserved.

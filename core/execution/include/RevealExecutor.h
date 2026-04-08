@@ -14,6 +14,9 @@ struct RevealExecutionResult {
     bool success{true};
     int attemptedSteps{0};
     int completedSteps{0};
+    int totalStepAttempts{0};
+    bool fallbackUsed{false};
+    int fallbackStepCount{0};
     std::string message;
     std::vector<ExecutionResult> stepResults;
 };

@@ -15,9 +15,12 @@
 #include <system_error>
 
 #include "ExecutionContract.h"
+#include "AIStateView.h"
+#include "EnvironmentAdapter.h"
 #include "InteractionGraph.h"
 #include "Intent.h"
 #include "IntentApiServer.h"
+#include "Logger.h"
 #include "TaskInterface.h"
 
 namespace iee {
@@ -59,6 +62,36 @@ std::string ToNarrow(const std::wstring& value) {
     return result;
 }
 
+std::string EscapeJson(const std::string& value) {
+    std::string escaped;
+    escaped.reserve(value.size() + 16U);
+
+    for (const char ch : value) {
+        switch (ch) {
+        case '"':
+            escaped += "\\\"";
+            break;
+        case '\\':
+            escaped += "\\\\";
+            break;
+        case '\n':
+            escaped += "\\n";
+            break;
+        case '\r':
+            escaped += "\\r";
+            break;
+        case '\t':
+            escaped += "\\t";
+            break;
+        default:
+            escaped.push_back(ch);
+            break;
+        }
+    }
+
+    return escaped;
+}
+
 std::string ReadOption(const ParsedCommand& command, const std::string& key) {
     const auto it = command.options.find(key);
     if (it == command.options.end()) {
@@ -69,6 +102,10 @@ std::string ReadOption(const ParsedCommand& command, const std::string& key) {
 
 bool HasOption(const ParsedCommand& command, const std::string& key) {
     return command.options.find(key) != command.options.end();
+}
+
+bool WantsJson(const ParsedCommand& command) {
+    return HasOption(command, "json") || HasOption(command, "pure-json");
 }
 
 std::size_t ReadSizeOption(
@@ -206,14 +243,29 @@ CliApp::CliApp(IntentRegistry& intentRegistry, ExecutionEngine& executionEngine,
 
 int CliApp::Run(int argc, char* argv[]) {
     const ParsedCommand command = CliParser::Parse(argc, argv);
+    const bool pureJson = HasOption(command, "pure-json");
+    Logger::SetEnabled(!pureJson);
 
     if (command.command.empty()) {
+        if (pureJson) {
+            std::cout << "{\"error\":{\"code\":\"missing_command\",\"message\":\"No command provided\"}}\n";
+            return 1;
+        }
+
         CliParser::PrintHelp();
         return 1;
     }
 
+    if (command.command == "state") {
+        return HandleState(command, false);
+    }
+
+    if (command.command == "state/ai" || command.command == "state-ai") {
+        return HandleState(command, true);
+    }
+
     if (command.command == "list-intents") {
-        return HandleListIntents();
+        return HandleListIntents(command);
     }
 
     if (command.command == "execute") {
@@ -221,7 +273,7 @@ int CliApp::Run(int argc, char* argv[]) {
     }
 
     if (command.command == "inspect") {
-        return HandleInspect();
+        return HandleInspect(command);
     }
 
     if (command.command == "graph") {
@@ -280,13 +332,110 @@ int CliApp::Run(int argc, char* argv[]) {
         return HandleDemo(command);
     }
 
+    if (pureJson) {
+        std::cout << "{\"error\":{\"code\":\"unknown_command\",\"message\":\"Unknown command: "
+                  << EscapeJson(command.command) << "\"}}\n";
+        return 1;
+    }
+
     CliParser::PrintHelp();
     return 1;
 }
 
-int CliApp::HandleListIntents() {
+int CliApp::HandleState(const ParsedCommand& command, bool aiView) {
+    RegistryEnvironmentAdapter adapter(intentRegistry_);
+    EnvironmentState state;
+    std::string error;
+    if (!adapter.CaptureState(&state, &error)) {
+        std::cerr << "Unable to capture environment state";
+        if (!error.empty()) {
+            std::cerr << ": " << error;
+        }
+        std::cerr << "\n";
+        return 1;
+    }
+
+    if (aiView) {
+        AIStateViewProjector projector;
+        const AIStateView view = projector.Build(state, false);
+
+        if (WantsJson(command) || command.command == "state/ai") {
+            std::cout << AIStateViewProjector::SerializeJson(view) << "\n";
+            return 0;
+        }
+
+        std::cout << "AI state view\n";
+        std::cout << "  Sequence       : " << view.sequence << "\n";
+        std::cout << "  Frame ID       : " << view.frameId << "\n";
+        std::cout << "  Graph version  : " << view.graphVersion << "\n";
+        std::cout << "  Graph signature: " << view.graphSignature << "\n";
+        std::cout << "  Nodes          : " << view.nodeCount << "\n";
+        std::cout << "  Hidden nodes   : " << view.hiddenNodeCount << "\n";
+        std::cout << "  Actionable     : " << view.actionableNodeCount << "\n";
+        return 0;
+    }
+
+    std::size_t hiddenCount = 0;
+    for (const auto& entry : state.unifiedState.interactionGraph.nodes) {
+        const InteractionNode& node = entry.second;
+        if (node.hidden || node.offscreen || node.collapsed) {
+            ++hiddenCount;
+        }
+    }
+
+    if (WantsJson(command)) {
+        std::ostringstream json;
+        json << "{";
+        json << "\"sequence\":" << state.sequence << ",";
+        json << "\"captured_at_ms\":"
+             << std::chrono::duration_cast<std::chrono::milliseconds>(state.capturedAt.time_since_epoch()).count()
+             << ",";
+        json << "\"active_window_title\":\"" << EscapeJson(ToNarrow(state.activeWindowTitle)) << "\",";
+        json << "\"active_process_path\":\"" << EscapeJson(ToNarrow(state.activeProcessPath)) << "\",";
+        json << "\"cursor\":{";
+        json << "\"x\":" << state.cursorPosition.x << ",";
+        json << "\"y\":" << state.cursorPosition.y;
+        json << "},";
+        json << "\"ui_element_count\":" << state.uiElements.size() << ",";
+        json << "\"filesystem_entry_count\":" << state.fileSystemEntries.size() << ",";
+        json << "\"graph_version\":" << state.unifiedState.interactionGraph.version << ",";
+        json << "\"graph_signature\":" << state.unifiedState.interactionGraph.signature << ",";
+        json << "\"node_count\":" << state.unifiedState.interactionGraph.nodes.size() << ",";
+        json << "\"hidden_node_count\":" << hiddenCount;
+        json << "}";
+        std::cout << json.str() << "\n";
+        return 0;
+    }
+
+    std::cout << "Environment state\n";
+    std::cout << "  Sequence       : " << state.sequence << "\n";
+    std::cout << "  Window         : " << ToNarrow(state.activeWindowTitle) << "\n";
+    std::cout << "  Process        : " << ToNarrow(state.activeProcessPath) << "\n";
+    std::cout << "  Cursor         : (" << state.cursorPosition.x << ", " << state.cursorPosition.y << ")\n";
+    std::cout << "  UI elements    : " << state.uiElements.size() << "\n";
+    std::cout << "  FS entries     : " << state.fileSystemEntries.size() << "\n";
+    std::cout << "  Graph version  : " << state.unifiedState.interactionGraph.version << "\n";
+    std::cout << "  Graph signature: " << state.unifiedState.interactionGraph.signature << "\n";
+    std::cout << "  Nodes          : " << state.unifiedState.interactionGraph.nodes.size() << "\n";
+    std::cout << "  Hidden nodes   : " << hiddenCount << "\n";
+    return 0;
+}
+
+int CliApp::HandleListIntents(const ParsedCommand& command) {
     intentRegistry_.Refresh();
     const auto intents = intentRegistry_.ListIntents();
+
+    if (WantsJson(command)) {
+        std::cout << "[";
+        for (std::size_t index = 0; index < intents.size(); ++index) {
+            if (index > 0) {
+                std::cout << ",";
+            }
+            std::cout << intents[index].Serialize();
+        }
+        std::cout << "]\n";
+        return 0;
+    }
 
     std::cout << std::left << std::setw(16) << "ACTION"
               << std::setw(36) << "TARGET"
@@ -308,9 +457,15 @@ int CliApp::HandleListIntents() {
 }
 
 int CliApp::HandleExecute(const ParsedCommand& command) {
+    const bool jsonMode = WantsJson(command);
     const IntentAction action = IntentActionFromString(command.action);
     if (action == IntentAction::Unknown) {
-        std::cerr << "Unknown intent action: " << command.action << "\n";
+        if (jsonMode) {
+            std::cout << "{\"error\":{\"code\":\"unknown_action\",\"message\":\"Unknown intent action: "
+                      << EscapeJson(command.action) << "\"}}\n";
+        } else {
+            std::cerr << "Unknown intent action: " << command.action << "\n";
+        }
         return 1;
     }
 
@@ -325,19 +480,46 @@ int CliApp::HandleExecute(const ParsedCommand& command) {
     if (!IsFileIntent(action)) {
         const std::string target = ReadOption(command, "target");
         if (target.empty()) {
-            std::cerr << "Missing --target for UI intent\n";
+            if (jsonMode) {
+                std::cout << "{\"error\":{\"code\":\"missing_target\",\"message\":\"Missing --target for UI intent\"}}\n";
+            } else {
+                std::cerr << "Missing --target for UI intent\n";
+            }
             return 1;
         }
 
         const std::wstring wideTarget = ToWide(target);
         const ResolutionResult resolution = intentRegistry_.Resolve(action, wideTarget);
         if (resolution.ambiguity.has_value()) {
-            std::cerr << "Ambiguous target: " << target << "\n";
-            for (const auto& candidate : resolution.ambiguity->candidates) {
-                std::cerr << "  - " << ToString(candidate.intent.action)
-                          << " target=\"" << ToNarrow(PrimaryTargetText(candidate.intent))
-                          << "\" score=" << std::fixed << std::setprecision(3) << candidate.score
-                          << "\n";
+            if (jsonMode) {
+                std::cout << "{";
+                std::cout << "\"error\":{";
+                std::cout << "\"code\":\"ambiguous_target\",";
+                std::cout << "\"message\":\"Ambiguous target: " << EscapeJson(target) << "\",";
+                std::cout << "\"candidates\":[";
+                for (std::size_t index = 0; index < resolution.ambiguity->candidates.size(); ++index) {
+                    if (index > 0) {
+                        std::cout << ",";
+                    }
+                    std::cout << "{";
+                    std::cout << "\"action\":\""
+                              << EscapeJson(ToString(resolution.ambiguity->candidates[index].intent.action)) << "\",";
+                    std::cout << "\"target\":\""
+                              << EscapeJson(ToNarrow(PrimaryTargetText(resolution.ambiguity->candidates[index].intent))) << "\",";
+                    std::cout << "\"score\":" << resolution.ambiguity->candidates[index].score;
+                    std::cout << "}";
+                }
+                std::cout << "]";
+                std::cout << "}";
+                std::cout << "}\n";
+            } else {
+                std::cerr << "Ambiguous target: " << target << "\n";
+                for (const auto& candidate : resolution.ambiguity->candidates) {
+                    std::cerr << "  - " << ToString(candidate.intent.action)
+                              << " target=\"" << ToNarrow(PrimaryTargetText(candidate.intent))
+                              << "\" score=" << std::fixed << std::setprecision(3) << candidate.score
+                              << "\n";
+                }
             }
             return 2;
         }
@@ -354,7 +536,11 @@ int CliApp::HandleExecute(const ParsedCommand& command) {
         if (action == IntentAction::SetValue) {
             const std::string value = ReadOption(command, "value");
             if (value.empty()) {
-                std::cerr << "Missing --value for set_value\n";
+                if (jsonMode) {
+                    std::cout << "{\"error\":{\"code\":\"missing_value\",\"message\":\"Missing --value for set_value\"}}\n";
+                } else {
+                    std::cerr << "Missing --value for set_value\n";
+                }
                 return 1;
             }
             intent.params.values["value"] = ToWide(value);
@@ -364,7 +550,11 @@ int CliApp::HandleExecute(const ParsedCommand& command) {
         if (action == IntentAction::Create) {
             const std::string path = ReadOption(command, "path");
             if (path.empty()) {
-                std::cerr << "Missing --path for create\n";
+                if (jsonMode) {
+                    std::cout << "{\"error\":{\"code\":\"missing_path\",\"message\":\"Missing --path for create\"}}\n";
+                } else {
+                    std::cerr << "Missing --path for create\n";
+                }
                 return 1;
             }
             intent.params.values["path"] = ToWide(path);
@@ -373,7 +563,11 @@ int CliApp::HandleExecute(const ParsedCommand& command) {
         } else if (action == IntentAction::Delete) {
             const std::string path = ReadOption(command, "path");
             if (path.empty()) {
-                std::cerr << "Missing --path for delete\n";
+                if (jsonMode) {
+                    std::cout << "{\"error\":{\"code\":\"missing_path\",\"message\":\"Missing --path for delete\"}}\n";
+                } else {
+                    std::cerr << "Missing --path for delete\n";
+                }
                 return 1;
             }
             intent.params.values["path"] = ToWide(path);
@@ -383,7 +577,11 @@ int CliApp::HandleExecute(const ParsedCommand& command) {
             const std::string path = ReadOption(command, "path");
             const std::string destination = ReadOption(command, "destination");
             if (path.empty() || destination.empty()) {
-                std::cerr << "Missing --path or --destination for move\n";
+                if (jsonMode) {
+                    std::cout << "{\"error\":{\"code\":\"missing_move_path\",\"message\":\"Missing --path or --destination for move\"}}\n";
+                } else {
+                    std::cerr << "Missing --path or --destination for move\n";
+                }
                 return 1;
             }
             intent.params.values["path"] = ToWide(path);
@@ -394,6 +592,25 @@ int CliApp::HandleExecute(const ParsedCommand& command) {
     }
 
     const ExecutionResult result = executionEngine_.Execute(intent);
+    if (jsonMode) {
+        std::cout << "{";
+        std::cout << "\"trace_id\":\"" << EscapeJson(result.traceId) << "\",";
+        std::cout << "\"method\":\"" << EscapeJson(result.method) << "\",";
+        std::cout << "\"status\":\"" << EscapeJson(ToString(result.status)) << "\",";
+        std::cout << "\"verified\":" << (result.verified ? "true" : "false") << ",";
+        std::cout << "\"used_fallback\":" << (result.usedFallback ? "true" : "false") << ",";
+        std::cout << "\"attempts\":" << result.attempts << ",";
+        std::cout << "\"duration_ms\":" << result.duration.count() << ",";
+        std::cout << "\"message\":\"" << EscapeJson(result.message) << "\"";
+        std::cout << "}\n";
+
+        if (IsSuccess(result.status) && !intent.id.empty()) {
+            intentRegistry_.RecordInteraction(intent.id);
+        }
+
+        return IsSuccess(result.status) ? 0 : 1;
+    }
+
     std::cout << "Execution method: " << result.method << "\n";
     std::cout << "Status: " << ToString(result.status) << "\n";
     std::cout << "Verified: " << (result.verified ? "true" : "false") << "\n";
@@ -408,12 +625,27 @@ int CliApp::HandleExecute(const ParsedCommand& command) {
     return IsSuccess(result.status) ? 0 : 1;
 }
 
-int CliApp::HandleInspect() {
+int CliApp::HandleInspect(const ParsedCommand& command) {
     intentRegistry_.Refresh();
 
     const auto snapshot = intentRegistry_.LastSnapshot();
     const auto intents = intentRegistry_.ListIntents();
     const CapabilityGraph graph = intentRegistry_.Graph();
+
+    if (WantsJson(command)) {
+        std::ostringstream json;
+        json << "{";
+        json << "\"active_window\":\"" << EscapeJson(ToNarrow(snapshot.activeWindowTitle)) << "\",";
+        json << "\"process_path\":\"" << EscapeJson(ToNarrow(snapshot.activeProcessPath)) << "\",";
+        json << "\"snapshot_sequence\":" << snapshot.sequence << ",";
+        json << "\"ui_elements\":" << snapshot.uiElements.size() << ",";
+        json << "\"filesystem_entries\":" << snapshot.fileSystemEntries.size() << ",";
+        json << "\"graph_nodes\":" << graph.Size() << ",";
+        json << "\"intent_count\":" << intents.size();
+        json << "}";
+        std::cout << json.str() << "\n";
+        return 0;
+    }
 
     std::cout << "Active window : " << ToNarrow(snapshot.activeWindowTitle) << "\n";
     std::cout << "Process path  : " << ToNarrow(snapshot.activeProcessPath) << "\n";
@@ -479,7 +711,7 @@ int CliApp::HandleGraph(const ParsedCommand& command) {
         }
     }
 
-    if (HasOption(command, "json")) {
+    if (WantsJson(command)) {
         if (!deltaRequested) {
             std::cout << InteractionGraphBuilder::SerializeGraphJson(graph) << "\n";
             return 0;
@@ -587,7 +819,7 @@ int CliApp::HandleNode(const ParsedCommand& command) {
 
     const Intent mappedIntent = InteractionGraphBuilder::GenerateIntent(*node);
 
-    if (HasOption(command, "json")) {
+    if (WantsJson(command)) {
         std::cout << "{";
         std::cout << "\"node\":" << InteractionGraphBuilder::SerializeNodeJson(*node) << ",";
         std::cout << "\"intent\":" << mappedIntent.Serialize() << ",";
@@ -643,7 +875,7 @@ int CliApp::HandlePlan(const ParsedCommand& command) {
         return 1;
     }
 
-    if (HasOption(command, "json")) {
+    if (WantsJson(command)) {
         std::cout << InteractionGraphBuilder::SerializeExecutionPlanJson(*plan) << "\n";
         return 0;
     }
@@ -695,7 +927,7 @@ int CliApp::HandleReveal(const ParsedCommand& command) {
         return 1;
     }
 
-    if (HasOption(command, "json")) {
+    if (WantsJson(command)) {
         std::cout << InteractionGraphBuilder::SerializeRevealStrategyJson(*reveal) << "\n";
         return 0;
     }
@@ -730,7 +962,7 @@ int CliApp::HandleCapabilities(const ParsedCommand& command) {
         intentRegistry_.Refresh();
         const auto intents = intentRegistry_.ListIntents();
 
-        if (HasOption(command, "json")) {
+        if (WantsJson(command)) {
             std::cout << "[";
             for (std::size_t index = 0; index < intents.size(); ++index) {
                 if (index > 0) {
@@ -766,7 +998,7 @@ int CliApp::HandleCapabilities(const ParsedCommand& command) {
     const std::size_t limit = ReadSizeOption(command, "limit", 4096U, 32768U);
     const std::vector<Intent> intents = InteractionGraphBuilder::GenerateIntents(graph, true, limit);
 
-    if (HasOption(command, "json")) {
+    if (WantsJson(command)) {
         std::cout << "{";
         std::cout << "\"count\":" << intents.size() << ",";
         std::cout << "\"capabilities\":[";
@@ -817,15 +1049,53 @@ int CliApp::HandleCapabilities(const ParsedCommand& command) {
 }
 
 int CliApp::HandleExplain(const ParsedCommand& command) {
+    const bool jsonMode = WantsJson(command);
     const ExplainInput input = ParseExplainInput(command);
     if (input.action == IntentAction::Unknown || input.target.empty()) {
-        std::cerr << "Usage: iee explain --action <intent> --target \"<label>\"\n";
+        if (jsonMode) {
+            std::cout << "{\"error\":{\"code\":\"invalid_explain_request\",\"message\":\"Usage: iee explain --action <intent> --target \\\"<label>\\\"\"}}\n";
+        } else {
+            std::cerr << "Usage: iee explain --action <intent> --target \"<label>\"\n";
+        }
         return 1;
     }
 
     intentRegistry_.Refresh();
 
     const ResolutionResult result = intentRegistry_.Resolve(input.action, input.target);
+    if (jsonMode) {
+        std::cout << "{";
+        std::cout << "\"action\":\"" << EscapeJson(ToString(input.action)) << "\",";
+        std::cout << "\"target\":\"" << EscapeJson(ToNarrow(input.target)) << "\",";
+        std::cout << "\"ambiguous\":" << (result.ambiguity.has_value() ? "true" : "false") << ",";
+        std::cout << "\"candidates\":[";
+
+        const std::size_t maxRows = std::min<std::size_t>(result.ranked.size(), 8U);
+        for (std::size_t i = 0; i < maxRows; ++i) {
+            if (i > 0) {
+                std::cout << ",";
+            }
+
+            const auto& match = result.ranked[i];
+            std::cout << "{";
+            std::cout << "\"score\":" << match.score << ",";
+            std::cout << "\"depth\":" << match.depthScore << ",";
+            std::cout << "\"proximity\":" << match.proximityScore << ",";
+            std::cout << "\"focus\":" << match.focusScore << ",";
+            std::cout << "\"recency\":" << match.recencyScore << ",";
+            std::cout << "\"intent\":" << match.intent.Serialize();
+            std::cout << "}";
+        }
+        std::cout << "]";
+
+        if (result.bestMatch.has_value()) {
+            std::cout << ",\"best\":" << result.bestMatch->intent.Serialize();
+        }
+
+        std::cout << "}\n";
+        return result.ranked.empty() ? 1 : 0;
+    }
+
     std::cout << "Explain request: action=" << ToString(input.action)
               << " target=\"" << ToNarrow(input.target) << "\"\n";
 
@@ -864,6 +1134,18 @@ int CliApp::HandleDebugIntents(const ParsedCommand& command) {
     intentRegistry_.Refresh();
     const auto intents = intentRegistry_.ListIntents();
 
+    if (WantsJson(command)) {
+        std::cout << "[";
+        for (std::size_t index = 0; index < intents.size(); ++index) {
+            if (index > 0) {
+                std::cout << ",";
+            }
+            std::cout << intents[index].Serialize();
+        }
+        std::cout << "]\n";
+        return 0;
+    }
+
     std::cout << "Debug intents (count=" << intents.size() << ")\n";
     for (const auto& intent : intents) {
         std::cout << "- " << intent.id
@@ -876,13 +1158,6 @@ int CliApp::HandleDebugIntents(const ParsedCommand& command) {
                   << "\n";
     }
 
-    if (HasOption(command, "json")) {
-        std::cout << "\nSerialized intents:\n";
-        for (const auto& intent : intents) {
-            std::cout << intent.Serialize() << "\n";
-        }
-    }
-
     return 0;
 }
 
@@ -893,7 +1168,7 @@ int CliApp::HandleApi(const ParsedCommand& command) {
     std::cout << "Starting IEE local API on 127.0.0.1:" << port << "\n";
     std::cout << "Routes: GET /health, GET /intents, GET /capabilities, GET /control/status, "
                  "GET /capabilities/full, GET /interaction-graph, GET /interaction-node/{id}, "
-                 "GET /telemetry/persistence, GET /stream/state, GET /state/ai, GET /stream/frame, GET /stream/live, GET /perf, "
+                 "GET /telemetry/persistence, GET /trace/{trace_id}, GET /stream/state, GET /state/ai, GET /stream/frame, GET /stream/live, GET /perf, "
                  "POST /execute, POST /task/plan, POST /predict, POST /explain, POST /control/start, POST /control/stop, "
                  "POST /stream/control\n";
     std::cout << "Graph delta query: GET /interaction-graph?delta_since=<version>\n";
@@ -907,7 +1182,7 @@ int CliApp::HandleApi(const ParsedCommand& command) {
 
 int CliApp::HandleTelemetry(const ParsedCommand& command) {
     if (HasOption(command, "persistence")) {
-        if (HasOption(command, "json")) {
+        if (WantsJson(command)) {
             std::cout << telemetry_.SerializePersistenceJson() << "\n";
             return 0;
         }
@@ -937,7 +1212,7 @@ int CliApp::HandleTelemetry(const ParsedCommand& command) {
     if (!statusFilter.empty() || !adapterFilter.empty()) {
         const auto traces = telemetry_.QueryExecutions(limit, statusFilter, adapterFilter);
 
-        if (HasOption(command, "json")) {
+        if (WantsJson(command)) {
             std::cout << "[";
             for (std::size_t index = 0; index < traces.size(); ++index) {
                 if (index > 0) {
@@ -969,7 +1244,7 @@ int CliApp::HandleTelemetry(const ParsedCommand& command) {
         return 0;
     }
 
-    if (HasOption(command, "json")) {
+    if (WantsJson(command)) {
         std::cout << telemetry_.SerializeSnapshotJson() << "\n";
         return 0;
     }
@@ -1006,6 +1281,7 @@ int CliApp::HandleTelemetry(const ParsedCommand& command) {
 }
 
 int CliApp::HandleTrace(const ParsedCommand& command) {
+    const bool jsonMode = WantsJson(command);
     std::string traceId = ReadOption(command, "id");
     if (traceId.empty() && !command.positionals.empty()) {
         traceId = command.positionals[0];
@@ -1020,7 +1296,23 @@ int CliApp::HandleTrace(const ParsedCommand& command) {
     const std::size_t limit = ReadSizeOption(command, "limit", 20U, 500U);
     const auto traces = telemetry_.RecentExecutions(limit);
     if (traces.empty()) {
-        std::cout << "No traces recorded yet.\n";
+        if (jsonMode) {
+            std::cout << "[]\n";
+        } else {
+            std::cout << "No traces recorded yet.\n";
+        }
+        return 0;
+    }
+
+    if (jsonMode) {
+        std::cout << "[";
+        for (std::size_t index = 0; index < traces.size(); ++index) {
+            if (index > 0) {
+                std::cout << ",";
+            }
+            std::cout << telemetry_.SerializeTraceJson(traces[index].traceId);
+        }
+        std::cout << "]\n";
         return 0;
     }
 
@@ -1046,7 +1338,7 @@ int CliApp::HandleTrace(const ParsedCommand& command) {
 int CliApp::HandleLatency(const ParsedCommand& command) {
     const std::size_t limit = ReadSizeOption(command, "limit", 200U, 4096U);
 
-    if (HasOption(command, "json")) {
+    if (WantsJson(command)) {
         std::cout << telemetry_.SerializeLatencyJson(limit) << "\n";
         return 0;
     }
@@ -1094,7 +1386,7 @@ int CliApp::HandlePerf(const ParsedCommand& command) {
     const bool strict = HasOption(command, "strict");
     const PerformanceContractSnapshot contract = telemetry_.PerformanceContract(targetBudgetMs, limit);
 
-    if (HasOption(command, "json")) {
+    if (WantsJson(command)) {
         std::ostringstream json;
         json << "{";
         json << "\"strict\":" << (strict ? "true" : "false") << ",";
@@ -1131,7 +1423,7 @@ int CliApp::HandlePerf(const ParsedCommand& command) {
 int CliApp::HandleVision(const ParsedCommand& command) {
     const std::size_t limit = ReadSizeOption(command, "limit", 200U, 4096U);
 
-    if (HasOption(command, "json")) {
+    if (WantsJson(command)) {
         std::cout << telemetry_.SerializeVisionJson(limit) << "\n";
         return 0;
     }
@@ -1218,7 +1510,7 @@ int CliApp::HandleDemo(const ParsedCommand& command) {
     TaskPlanner planner;
     const TaskPlanResult plan = planner.Plan(request, graph);
 
-    if (HasOption(command, "json")) {
+    if (WantsJson(command)) {
         std::cout << TaskPlanner::SerializeJson(plan) << "\n";
     } else {
         std::cout << "Demo scenario: " << scenario << "\n";
@@ -1258,6 +1550,16 @@ int CliApp::HandleDemo(const ParsedCommand& command) {
 
     ExecutionContract contract(executionEngine_, intentRegistry_);
     const ExecutionContractResult execution = contract.Execute(intent, nodeId);
+
+    if (WantsJson(command)) {
+        std::cout << "{";
+        std::cout << "\"status\":\"" << EscapeJson(ToString(execution.execution.status)) << "\",";
+        std::cout << "\"contract_satisfied\":" << (execution.contractSatisfied ? "true" : "false") << ",";
+        std::cout << "\"stage\":\"" << EscapeJson(execution.stage) << "\",";
+        std::cout << "\"message\":\"" << EscapeJson(execution.execution.message) << "\"";
+        std::cout << "}\n";
+        return execution.contractSatisfied ? 0 : 2;
+    }
 
     std::cout << "Run result\n";
     std::cout << "  status            : " << ToString(execution.execution.status) << "\n";

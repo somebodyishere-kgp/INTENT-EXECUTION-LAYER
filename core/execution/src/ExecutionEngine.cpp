@@ -134,6 +134,7 @@ ExecutionResult ExecutionEngine::ExecuteInternal(const Intent& intent, int timeo
     }
 
     std::shared_ptr<Adapter> usedAdapter = adapter;
+    bool fallbackUsed = false;
     ExecutionResult result = ExecuteWithRecovery(intent, adapter, timeoutOverrideMs);
     if (result.status == ExecutionStatus::FAILED && intent.constraints.allowFallback) {
         for (const auto& candidate : adapters_.GetAdapters()) {
@@ -153,12 +154,14 @@ ExecutionResult ExecutionEngine::ExecuteInternal(const Intent& intent, int timeo
             if (fallbackResult.status == ExecutionStatus::SUCCESS || fallbackResult.status == ExecutionStatus::PARTIAL) {
                 result = fallbackResult;
                 usedAdapter = candidate;
+                fallbackUsed = true;
                 break;
             }
         }
     }
 
     result.traceId = traceId;
+    result.usedFallback = fallbackUsed;
     if (result.method.empty() && usedAdapter != nullptr) {
         result.method = usedAdapter->Name();
     }

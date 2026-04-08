@@ -180,6 +180,7 @@ int main() {
 
         iee::IntentApiServer api(registry, engine, telemetry);
         std::string saveNodeId;
+        std::string lastTraceId;
         std::uint64_t initialGraphVersion = 0;
 
         {
@@ -206,6 +207,15 @@ int main() {
             AssertTrue(HasStatus(response, 200), "GET /state/ai should return 200");
             AssertTrue(response.find("\"interaction_summary\"") != std::string::npos, "AI state response should include interaction summary");
             AssertTrue(response.find("\"dominant_actions\"") != std::string::npos, "AI state response should include dominant actions");
+            AssertTrue(response.find("\"filter\"") != std::string::npos, "AI state response should include filter metadata");
+        }
+
+        {
+            const std::string response = api.HandleRequestForTesting(
+                BuildHttpRequest("GET", "/state/ai?filter=relevant&goal=export%20hidden%20menu&domain=presentation&top_n=3"));
+            AssertTrue(HasStatus(response, 200), "GET /state/ai relevant filter should return 200");
+            AssertTrue(response.find("\"mode\":\"relevant\"") != std::string::npos, "Relevant AI state response should include relevant mode");
+            AssertTrue(response.find("\"nodes\"") != std::string::npos, "Relevant AI state response should include filtered node list");
         }
 
         {
@@ -213,6 +223,12 @@ int main() {
             AssertTrue(HasStatus(response, 200), "GET /stream/frame should return 200");
             AssertTrue(response.find("\"mode\":\"full\"") != std::string::npos, "Stream frame response should default to full mode");
             AssertTrue(response.find("\"state\"") != std::string::npos, "Stream frame response should include full screen state");
+            AssertTrue(
+                response.find("\"estimated_fps\":") != std::string::npos,
+                "Stream frame response should include vision estimated_fps");
+            AssertTrue(
+                response.find(",,\"capture\"") == std::string::npos,
+                "Stream frame response should not contain duplicate comma before capture stats");
         }
 
         {
@@ -220,6 +236,9 @@ int main() {
             AssertTrue(HasStatus(response, 200), "GET /stream/frame?mode=delta should return 200");
             AssertTrue(response.find("\"mode\":\"delta\"") != std::string::npos, "Delta stream frame response should identify delta mode");
             AssertTrue(response.find("\"delta\"") != std::string::npos, "Delta stream frame response should include delta payload");
+            AssertTrue(
+                response.find(",,\"capture\"") == std::string::npos,
+                "Delta stream frame response should not contain duplicate comma before capture stats");
         }
 
         {
@@ -239,6 +258,9 @@ int main() {
             AssertTrue(HasStatus(response, 200) || HasStatus(response, 409), "GET /perf strict mode should return 200 or 409");
             AssertTrue(response.find("\"strict\":true") != std::string::npos, "Strict perf response should include strict flag");
             AssertTrue(response.find("\"strict_passed\"") != std::string::npos, "Strict perf response should include strict pass field");
+            AssertTrue(
+                response.find("\"sample_activation_seeded\"") != std::string::npos,
+                "Strict perf response should include sample activation metadata");
         }
 
         {
@@ -305,6 +327,8 @@ int main() {
             AssertTrue(HasStatus(response, 200), "POST /task/plan should return 200");
             AssertTrue(response.find("\"planning_only\":true") != std::string::npos, "Task plan response should be planning-only");
             AssertTrue(response.find("\"task_plan\"") != std::string::npos, "Task plan response should include task plan payload");
+            AssertTrue(response.find("\"plans\"") != std::string::npos, "Task plan response should include ranked plans payload");
+            AssertTrue(response.find("\"plan_score\"") != std::string::npos, "Task plan response should include plan score metadata");
         }
 
         {
@@ -313,10 +337,24 @@ int main() {
             const std::string response = api.HandleRequestForTesting(BuildHttpRequest("POST", "/execute", body));
             AssertTrue(HasStatus(response, 200), "POST /execute should return 200 for create");
             AssertTrue(response.find("\"trace_id\"") != std::string::npos, "Execution response should include trace id");
+            lastTraceId = ReadJsonStringField(response, "trace_id");
             AssertTrue(std::filesystem::exists(tempPath), "Create request should materialize file");
             if (std::filesystem::exists(tempPath)) {
                 std::filesystem::remove(tempPath);
             }
+        }
+
+        {
+            AssertTrue(!lastTraceId.empty(), "Execution trace id should be populated before trace fetch");
+            const std::string response = api.HandleRequestForTesting(
+                BuildHttpRequest("GET", "/trace/" + lastTraceId));
+            AssertTrue(HasStatus(response, 200), "GET /trace/{trace_id} should return 200");
+            AssertTrue(response.find("\"trace_id\"") != std::string::npos, "Trace lookup should include trace payload");
+        }
+
+        {
+            const std::string response = api.HandleRequestForTesting(BuildHttpRequest("GET", "/trace/does-not-exist"));
+            AssertTrue(HasStatus(response, 404), "GET /trace/{trace_id} should return 404 for unknown traces");
         }
 
         {

@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <charconv>
 #include <cmath>
+#include <cwctype>
 #include <filesystem>
 #include <fstream>
 #include <limits>
@@ -61,6 +62,31 @@ Context BuildContext(const ObserverSnapshot& snapshot) {
     std::error_code ec;
     context.workingDirectory = std::filesystem::current_path(ec).wstring();
     return context;
+}
+
+std::wstring ToLowerWide(std::wstring value) {
+    std::transform(value.begin(), value.end(), value.begin(), [](wchar_t ch) {
+        return static_cast<wchar_t>(std::towlower(ch));
+    });
+    return value;
+}
+
+bool ContainsCaseInsensitive(const std::wstring& haystack, const std::wstring& needle) {
+    if (haystack.empty() || needle.empty()) {
+        return false;
+    }
+
+    return ToLowerWide(haystack).find(ToLowerWide(needle)) != std::wstring::npos;
+}
+
+std::wstring PrimaryTarget(const Intent& intent) {
+    if (!intent.target.label.empty()) {
+        return intent.target.label;
+    }
+    if (!intent.target.automationId.empty()) {
+        return intent.target.automationId;
+    }
+    return intent.target.path;
 }
 
 float CompositeScore(const AdapterScore& score) {
@@ -225,6 +251,88 @@ AdapterScore UIAAdapter::GetScore() const {
     score.latency = 60.0F;
     score.confidence = 0.90F;
     return score;
+}
+
+VSCodeAdapter::VSCodeAdapter(IAccessibilityLayer& accessibilityLayer)
+    : delegate_(accessibilityLayer) {}
+
+std::string VSCodeAdapter::Name() const {
+    return "VSCodeAdapter";
+}
+
+std::vector<Intent> VSCodeAdapter::GetCapabilities(const ObserverSnapshot& snapshot, const CapabilityGraph& graph) {
+    if (!IsVsCodeSnapshot(snapshot)) {
+        return {};
+    }
+
+    std::vector<Intent> intents = delegate_.GetCapabilities(snapshot, graph);
+    for (Intent& intent : intents) {
+        intent.source = "uia_vscode";
+        intent.confidence = std::max(intent.confidence, 0.95F);
+
+        if (!intent.id.empty()) {
+            intent.id = "vscode:" + intent.id;
+        }
+    }
+
+    return intents;
+}
+
+bool VSCodeAdapter::CanExecute(const Intent& intent) const {
+    if (!delegate_.CanExecute(intent)) {
+        return false;
+    }
+
+    if (IsVsCodeIntent(intent)) {
+        return true;
+    }
+
+    return IsVsCodeTargetHint(PrimaryTarget(intent));
+}
+
+ExecutionResult VSCodeAdapter::Execute(const Intent& intent) {
+    ExecutionResult result = delegate_.Execute(intent);
+    result.method = "uia_vscode";
+    return result;
+}
+
+AdapterScore VSCodeAdapter::GetScore() const {
+    AdapterScore score;
+    score.reliability = 0.90F;
+    score.latency = 55.0F;
+    score.confidence = 0.96F;
+    return score;
+}
+
+bool VSCodeAdapter::IsVsCodeSnapshot(const ObserverSnapshot& snapshot) {
+    return ContainsCaseInsensitive(snapshot.activeProcessPath, L"code.exe") ||
+        ContainsCaseInsensitive(snapshot.activeProcessPath, L"code - insiders.exe") ||
+        ContainsCaseInsensitive(snapshot.activeWindowTitle, L"visual studio code") ||
+        ContainsCaseInsensitive(snapshot.activeWindowTitle, L"vscode") ||
+        ContainsCaseInsensitive(snapshot.activeWindowTitle, L"vs code");
+}
+
+bool VSCodeAdapter::IsVsCodeIntent(const Intent& intent) {
+    return ContainsCaseInsensitive(intent.context.application, L"code.exe") ||
+        ContainsCaseInsensitive(intent.context.application, L"code - insiders.exe") ||
+        ContainsCaseInsensitive(intent.context.windowTitle, L"visual studio code") ||
+        ContainsCaseInsensitive(intent.context.windowTitle, L"vscode") ||
+        ContainsCaseInsensitive(intent.context.windowTitle, L"vs code");
+}
+
+bool VSCodeAdapter::IsVsCodeTargetHint(const std::wstring& value) {
+    if (value.empty()) {
+        return false;
+    }
+
+    return ContainsCaseInsensitive(value, L"command palette") ||
+        ContainsCaseInsensitive(value, L"explorer") ||
+        ContainsCaseInsensitive(value, L"terminal") ||
+        ContainsCaseInsensitive(value, L"extensions") ||
+        ContainsCaseInsensitive(value, L"debug console") ||
+        ContainsCaseInsensitive(value, L"source control") ||
+        ContainsCaseInsensitive(value, L"problems") ||
+        ContainsCaseInsensitive(value, L"editor");
 }
 
 std::string InputAdapter::Name() const {

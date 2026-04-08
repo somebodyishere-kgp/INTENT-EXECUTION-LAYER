@@ -13,6 +13,9 @@ enum class LogLevel {
 
 class Logger {
 public:
+    static void SetEnabled(bool enabled);
+    static bool Enabled();
+
     static void Log(LogLevel level, std::string_view source, std::string_view message);
     static void Info(std::string_view source, std::string_view message);
     static void Warning(std::string_view source, std::string_view message);

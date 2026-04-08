@@ -28,6 +28,27 @@ This repository now includes:
 - IEE v1.5.1: unified interaction graph + hidden UI exposure
 - IEE v1.6: production execution-aware UIG + graph versioning/deltas
 - IEE v1.7: AI SDK, task planning interface, reveal hardening, and execution contracts
+- IEE v1.8: intelligent plan scoring, AI state filters, adapter specialization, trace route, and pure JSON CLI mode
+
+## v1.8 Highlights
+
+- Intelligent planning score model:
+  - `PlanScore { relevance, execution_cost, success_probability, total }`
+  - planner output now includes ranked `plans: [{ plan, score }]` payloads
+- AI state filter modes on `GET /state/ai`:
+  - `filter=interactive`
+  - `filter=visible`
+  - `filter=relevant&goal=...&domain=...&top_n=...`
+- Adapter specialization:
+  - added `VSCodeAdapter` for VS Code-context UI specialization with deterministic fallback to generic adapters
+- Reveal metadata v2:
+  - execution responses now include reveal fallback metadata (`reveal_total_step_attempts`, `reveal_fallback_used`, `reveal_fallback_step_count`)
+- Trace API:
+  - added `GET /trace/{trace_id}`
+- Machine-output mode:
+  - added global CLI flag `--pure-json` to force structured output and suppress runtime logger noise
+- Strict perf activation:
+  - `GET /perf?strict=true` now seeds bounded synthetic latency sample metadata when sample window is empty (`sample_activation_seeded`)
 
 ## v1.7 Highlights
 
@@ -188,6 +209,7 @@ ctest --test-dir build -C Debug --output-on-failure
 
 # inspect runtime state
 ./build/Debug/iee.exe inspect
+./build/Debug/iee.exe state/ai --pure-json
 
 # inspect interaction graph and a node mapping
 ./build/Debug/iee.exe graph
@@ -225,6 +247,9 @@ ctest --test-dir build -C Debug --output-on-failure
 ./build/Debug/iee.exe demo browser --json
 ./build/Debug/iee.exe demo presentation --run
 
+# force machine-readable JSON output
+./build/Debug/iee.exe execute create --path notes.txt --pure-json
+
 # vision pipeline metrics
 ./build/Debug/iee.exe vision
 ./build/Debug/iee.exe vision --json --limit 300
@@ -253,6 +278,7 @@ Available routes:
 - `GET /interaction-graph`
 - `GET /interaction-node/{id}`
 - `GET /telemetry/persistence`
+- `GET /trace/{trace_id}`
 - `GET /control/status`
 - `GET /stream/state`
 - `GET /state/ai`
@@ -306,6 +332,12 @@ Example interaction-graph delta query:
 
 ```text
 GET /interaction-graph?delta_since=1001
+```
+
+Example AI-state relevant filter query:
+
+```text
+GET /state/ai?filter=relevant&goal=export%20menu&domain=presentation&top_n=5&include_hidden=true
 ```
 
 Example prediction payload:
