@@ -19,6 +19,7 @@
 #include <vector>
 
 #include "ActionSequence.h"
+#include "ActionInterface.h"
 #include "AIStateView.h"
 #include "ExecutionContract.h"
 #include "TaskInterface.h"
@@ -2299,6 +2300,42 @@ std::string IntentApiServer::HandleRequest(const std::string& request) {
 
         const int statusCode = sequenceResult.success ? 200 : 500;
         return BuildResponse(statusCode, statusCode == 200 ? "OK" : "Internal Server Error", resultJson.str());
+    }
+
+    if (method == "POST" && path == "/act") {
+        ActionRequest actionRequest;
+        std::string parseError;
+        if (!ParseActionRequestJson(body, &actionRequest, &parseError)) {
+            ActionExecutionResult parseFailure;
+            parseFailure.status = "failure";
+            parseFailure.traceId = telemetry_.NewTraceId();
+            parseFailure.reason = parseError.empty() ? "invalid_action_request" : parseError;
+            return BuildResponse(400, "Bad Request", SerializeActionExecutionResultJson(parseFailure));
+        }
+
+        ActionExecutor actionExecutor(registry_, executionEngine_, telemetry_);
+        const ActionExecutionResult actionResult = actionExecutor.Act(actionRequest);
+        const std::string payload = SerializeActionExecutionResultJson(actionResult);
+
+        int statusCode = 200;
+        std::string statusText = "OK";
+        if (actionResult.status != "success") {
+            if (actionResult.reason == "ambiguous_target") {
+                statusCode = 409;
+                statusText = "Conflict";
+            } else if (
+                actionResult.reason == "missing_target" ||
+                actionResult.reason == "missing_value" ||
+                actionResult.reason == "unsupported_action") {
+                statusCode = 400;
+                statusText = "Bad Request";
+            } else {
+                statusCode = 500;
+                statusText = "Internal Server Error";
+            }
+        }
+
+        return BuildResponse(statusCode, statusText, payload);
     }
 
     if (method == "POST" && path == "/task/plan") {

@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <charconv>
+#include <cctype>
 #include <cstdint>
 #include <cstdlib>
 #include <iomanip>
@@ -14,6 +15,7 @@
 #include <string>
 #include <system_error>
 
+#include "ActionInterface.h"
 #include "ExecutionContract.h"
 #include "AIStateView.h"
 #include "EnvironmentAdapter.h"
@@ -215,6 +217,78 @@ ExplainInput ParseExplainInput(const ParsedCommand& command) {
     return input;
 }
 
+std::string JoinPositionals(const ParsedCommand& command) {
+    std::ostringstream joined;
+    for (std::size_t index = 0; index < command.positionals.size(); ++index) {
+        if (index > 0) {
+            joined << " ";
+        }
+        joined << command.positionals[index];
+    }
+    return joined.str();
+}
+
+std::string ToAsciiLower(std::string value) {
+    std::transform(value.begin(), value.end(), value.begin(), [](unsigned char ch) {
+        return static_cast<char>(std::tolower(ch));
+    });
+    return value;
+}
+
+bool ParseActPhrase(const std::string& phrase, ActionRequest* request) {
+    if (request == nullptr) {
+        return false;
+    }
+
+    const std::string normalized = ToAsciiLower(phrase);
+    if (normalized.empty()) {
+        return false;
+    }
+
+    ActionRequest parsed;
+
+    const auto startsWith = [&normalized](const char* prefix) {
+        const std::size_t length = std::char_traits<char>::length(prefix);
+        return normalized.size() >= length && normalized.compare(0, length, prefix) == 0;
+    };
+
+    if (startsWith("click ") || startsWith("open ") || startsWith("activate ")) {
+        parsed.action = "activate";
+        const std::size_t separator = normalized.find(' ');
+        parsed.target = separator == std::string::npos ? "" : phrase.substr(separator + 1U);
+    } else if (startsWith("select ")) {
+        parsed.action = "select";
+        parsed.target = phrase.substr(std::string("select ").size());
+    } else if (startsWith("type ")) {
+        parsed.action = "set_value";
+        const std::size_t inPos = normalized.find(" in ");
+        if (inPos == std::string::npos) {
+            parsed.value = phrase.substr(std::string("type ").size());
+            parsed.target = "focused input";
+        } else {
+            parsed.value = phrase.substr(std::string("type ").size(), inPos - std::string("type ").size());
+            parsed.target = phrase.substr(inPos + std::string(" in ").size());
+        }
+    } else if (startsWith("navigate ")) {
+        parsed.action = "navigate";
+        parsed.target = "address bar";
+        parsed.value = phrase.substr(std::string("navigate ").size());
+    } else if (startsWith("go to ")) {
+        parsed.action = "navigate";
+        parsed.target = "address bar";
+        parsed.value = phrase.substr(std::string("go to ").size());
+    } else {
+        return false;
+    }
+
+    if (parsed.target.empty()) {
+        return false;
+    }
+
+    *request = std::move(parsed);
+    return true;
+}
+
 InteractionGraph BuildLatestInteractionGraph(IntentRegistry& intentRegistry, ObserverSnapshot* snapshotOut = nullptr) {
     intentRegistry.Refresh();
     const ObserverSnapshot snapshot = intentRegistry.LastSnapshot();
@@ -270,6 +344,10 @@ int CliApp::Run(int argc, char* argv[]) {
 
     if (command.command == "execute") {
         return HandleExecute(command);
+    }
+
+    if (command.command == "act") {
+        return HandleAct(command);
     }
 
     if (command.command == "inspect") {
@@ -623,6 +701,97 @@ int CliApp::HandleExecute(const ParsedCommand& command) {
     }
 
     return IsSuccess(result.status) ? 0 : 1;
+}
+
+int CliApp::HandleAct(const ParsedCommand& command) {
+    const bool jsonMode = WantsJson(command);
+
+    ActionRequest request;
+    request.action = ReadOption(command, "action");
+    request.target = ReadOption(command, "target");
+    request.value = ReadOption(command, "value");
+    request.context.app = ReadOption(command, "app");
+    request.context.domain = ReadOption(command, "domain");
+
+    if (request.action.empty() || request.target.empty()) {
+        const std::string phrase = JoinPositionals(command);
+        ActionRequest phraseRequest;
+        if (!phrase.empty() && ParseActPhrase(phrase, &phraseRequest)) {
+            if (request.action.empty()) {
+                request.action = phraseRequest.action;
+            }
+            if (request.target.empty()) {
+                request.target = phraseRequest.target;
+            }
+            if (request.value.empty()) {
+                request.value = phraseRequest.value;
+            }
+        }
+    }
+
+    if (request.action.empty() || request.target.empty()) {
+        if (jsonMode) {
+            ActionExecutionResult invalid;
+            invalid.status = "failure";
+            invalid.traceId = telemetry_.NewTraceId();
+            invalid.reason = "invalid_act_request";
+            std::cout << SerializeActionExecutionResultJson(invalid) << "\n";
+        } else {
+            std::cerr << "Usage: iee act \"click export\" | --action <name> --target \"<label>\" [--value <text>] [--app <hint>] [--domain <hint>]\n";
+        }
+        return 1;
+    }
+
+    ActionExecutor executor(intentRegistry_, executionEngine_, telemetry_);
+    const ActionExecutionResult result = executor.Act(request);
+
+    if (jsonMode) {
+        std::cout << SerializeActionExecutionResultJson(result) << "\n";
+        return result.status == "success" ? 0 : 1;
+    }
+
+    std::cout << "Action request\n";
+    std::cout << "  action           : " << request.action << "\n";
+    std::cout << "  target           : " << request.target << "\n";
+    if (!request.value.empty()) {
+        std::cout << "  value            : " << request.value << "\n";
+    }
+    if (!request.context.app.empty()) {
+        std::cout << "  app hint         : " << request.context.app << "\n";
+    }
+    if (!request.context.domain.empty()) {
+        std::cout << "  domain hint      : " << request.context.domain << "\n";
+    }
+
+    std::cout << "\nAction result\n";
+    std::cout << "  status           : " << result.status << "\n";
+    std::cout << "  trace_id         : " << result.traceId << "\n";
+    std::cout << "  resolved_node_id : " << result.resolvedNodeId << "\n";
+    std::cout << "  reveal_used      : " << (result.revealUsed ? "true" : "false") << "\n";
+    std::cout << "  verified         : " << (result.verified ? "true" : "false") << "\n";
+    if (!result.reason.empty()) {
+        std::cout << "  reason           : " << result.reason << "\n";
+    }
+    if (!result.executionStatus.empty()) {
+        std::cout << "  execution_status : " << result.executionStatus << "\n";
+    }
+    if (!result.executionMethod.empty()) {
+        std::cout << "  execution_method : " << result.executionMethod << "\n";
+    }
+    if (!result.executionMessage.empty()) {
+        std::cout << "  execution_msg    : " << result.executionMessage << "\n";
+    }
+
+    if (result.status != "success" && !result.candidates.empty()) {
+        std::cout << "\nCandidates\n";
+        for (const ActionResolutionCandidate& candidate : result.candidates) {
+            std::cout << "  - node=" << candidate.nodeId
+                      << " confidence=" << std::fixed << std::setprecision(3) << candidate.confidence
+                      << " label=\"" << candidate.label << "\"\n";
+        }
+    }
+
+    return result.status == "success" ? 0 : 1;
 }
 
 int CliApp::HandleInspect(const ParsedCommand& command) {
@@ -1169,7 +1338,7 @@ int CliApp::HandleApi(const ParsedCommand& command) {
     std::cout << "Routes: GET /health, GET /intents, GET /capabilities, GET /control/status, "
                  "GET /capabilities/full, GET /interaction-graph, GET /interaction-node/{id}, "
                  "GET /telemetry/persistence, GET /trace/{trace_id}, GET /stream/state, GET /state/ai, GET /stream/frame, GET /stream/live, GET /perf, "
-                 "POST /execute, POST /task/plan, POST /predict, POST /explain, POST /control/start, POST /control/stop, "
+                 "POST /execute, POST /act, POST /task/plan, POST /predict, POST /explain, POST /control/start, POST /control/stop, "
                  "POST /stream/control\n";
     std::cout << "Graph delta query: GET /interaction-graph?delta_since=<version>\n";
     if (singleRequest) {

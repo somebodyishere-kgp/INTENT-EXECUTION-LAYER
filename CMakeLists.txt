@@ -13,6 +13,7 @@ else()
 endif()
 
 add_library(iee_core
+    core/action/src/ActionInterface.cpp
     core/accessibility/src/AccessibilityLayer.cpp
     core/capability/src/CapabilityGraph.cpp
     core/capability/src/CapabilityExtractor.cpp
@@ -42,6 +43,7 @@ add_library(iee_core
 )
 
 target_include_directories(iee_core PUBLIC
+    core/action/include
     core/accessibility/include
     core/capability/include
     core/event/include
@@ -176,6 +178,18 @@ add_executable(iee_test_scenario_task_interface
 target_include_directories(iee_test_scenario_task_interface PRIVATE tests)
 target_link_libraries(iee_test_scenario_task_interface PRIVATE iee_core)
 
+add_executable(iee_test_integration_action_interface
+    tests/integration_action_interface.cpp
+)
+target_include_directories(iee_test_integration_action_interface PRIVATE tests)
+target_link_libraries(iee_test_integration_action_interface PRIVATE iee_core)
+
+add_executable(iee_test_scenario_action_interface
+    tests/scenario_action_interface.cpp
+)
+target_include_directories(iee_test_scenario_action_interface PRIVATE tests)
+target_link_libraries(iee_test_scenario_action_interface PRIVATE iee_core)
+
 add_test(NAME unit_capability_extractor COMMAND iee_test_unit_capability)
 add_test(NAME unit_intent_schema COMMAND iee_test_unit_intent)
 add_test(NAME integration_execution_filesystem COMMAND iee_test_integration_execution)
@@ -193,3 +207,5 @@ add_test(NAME integration_control_runtime COMMAND iee_test_integration_control_r
 add_test(NAME integration_closed_loop_feedback COMMAND iee_test_integration_closed_loop_feedback)
 add_test(NAME scenario_uig_hidden_exposure COMMAND iee_test_scenario_uig_hidden_exposure)
 add_test(NAME scenario_task_interface COMMAND iee_test_scenario_task_interface)
+add_test(NAME integration_action_interface COMMAND iee_test_integration_action_interface)
+add_test(NAME scenario_action_interface COMMAND iee_test_scenario_action_interface)

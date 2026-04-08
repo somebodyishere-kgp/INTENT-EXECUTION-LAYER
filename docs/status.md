@@ -1,10 +1,10 @@
-# IEE v1.8 Status
+# IEE v1.9 Status
 
 ## Date
 2026-04-08
 
 ## Current State
-IEE has been upgraded to v1.8 with intelligent planning ranking, AI state filter modes, adapter specialization, trace retrieval, and machine-output CLI behavior.
+IEE has been upgraded to v1.9 with an Action Interface Layer (AI Hands) for deterministic one-step action execution via API and CLI.
 
 The runtime now supports:
 
@@ -18,8 +18,34 @@ The runtime now supports:
 - direct trace retrieval route (`GET /trace/{trace_id}`)
 - machine-output CLI mode (`--pure-json`)
 - strict latency contract reporting in both API and CLI surfaces
+- one-step action execution route (`POST /act`)
+- deterministic target resolver scoring across planner/label/visibility/context/recency
+- CLI natural action command (`iee act ...`) with JSON and pure-JSON modes
 
-## Completed v1.8 Work
+## Completed v1.9 Work
+- Action interface core:
+  - added `core/action` module with `ActionRequest`, `TargetResolver`, `ActionExecutor`
+  - added deterministic action request parsing and response serialization
+  - added interaction-memory weighting for repeated successful target resolutions
+- One-step action API:
+  - added `POST /act`
+  - added structured parse failures (`missing_action`, `missing_target`, etc.)
+  - added deterministic status mapping for ambiguous/bad-request/internal failure classes
+- One-step action CLI:
+  - added `iee act` command handler
+  - supports phrase parsing (`click/open/type/navigate/go to`) and explicit options
+  - supports `--json` and global `--pure-json`
+- Validation tests:
+  - added `integration_action_interface`
+  - added `scenario_action_interface`
+  - covered required paths:
+    - simple resolve/execute
+    - ambiguous target handling
+    - hidden reveal execution
+    - `set_value` flow
+    - natural-language scenarios (VS Code palette, browser input+click, hidden menu)
+
+## Prior v1.8 Work (Retained)
 - Task interface:
   - added `PlanScore` to planner output
   - ranking now uses deterministic `PlanScore.total`
@@ -69,6 +95,6 @@ The runtime now supports:
   - `GET /perf?strict=true` returned `sample_activation_seeded:true` with non-zero contract sample count.
 
 ## Remaining Non-Blocking Gaps
+- Action memory is process-local and non-persistent; optional persisted action memory remains future work.
+- Domain affinity heuristics are deterministic and lightweight; deeper domain packs can be added per app family.
 - Reveal actions remain generic activation primitives; deeper app-specific reveal actions can be expanded.
-- Planner remains deterministic lexical/domain ranking; broader semantic reasoning remains future work.
-- API graph history remains bounded for memory safety and can require reset for stale clients.

@@ -29,6 +29,28 @@ This repository now includes:
 - IEE v1.6: production execution-aware UIG + graph versioning/deltas
 - IEE v1.7: AI SDK, task planning interface, reveal hardening, and execution contracts
 - IEE v1.8: intelligent plan scoring, AI state filters, adapter specialization, trace route, and pure JSON CLI mode
+- IEE v1.9: Action Interface Layer (AI Hands) with deterministic target resolution and one-step `/act` execution
+
+## v1.9 Highlights
+
+- Action Interface Layer (AIL):
+  - added `ActionRequest`, `TargetResolver`, and `ActionExecutor` in `core/action`
+  - one-step action orchestration over existing planner/reveal/contract/execution runtime
+- New one-step action route:
+  - `POST /act` accepts natural action requests (`action`, `target`, optional `value`, optional `context`)
+  - returns structured success/failure with `trace_id`, resolved node metadata, and candidate alternatives
+- Deterministic target ranking:
+  - combines label/fuzzy similarity, planner score, visibility, context affinity, and interaction recency/memory
+  - bounded candidate sets with deterministic tie-break behavior
+- Context-aware execution:
+  - supports `context.app` and `context.domain` hints (`generic`, `browser`, `presentation`)
+- Failure diagnostics:
+  - explicit reasons for `unsupported_action`, `target_not_found`, `ambiguous_target`, `missing_value`, reveal/verify failures
+- CLI one-step actions:
+  - added `iee act ...` with natural phrase support and `--json`/`--pure-json`
+- Validation:
+  - new integration test coverage in `integration_action_interface`
+  - new scenario coverage in `scenario_action_interface`
 
 ## v1.8 Highlights
 
@@ -247,8 +269,13 @@ ctest --test-dir build -C Debug --output-on-failure
 ./build/Debug/iee.exe demo browser --json
 ./build/Debug/iee.exe demo presentation --run
 
+# one-step action interface
+./build/Debug/iee.exe act "open command palette"
+./build/Debug/iee.exe act --action set_value --target "search bar" --value "hello" --domain browser --json
+
 # force machine-readable JSON output
 ./build/Debug/iee.exe execute create --path notes.txt --pure-json
+./build/Debug/iee.exe act "type github copilot in search bar" --pure-json
 
 # vision pipeline metrics
 ./build/Debug/iee.exe vision
@@ -286,6 +313,7 @@ Available routes:
 - `GET /stream/live`
 - `GET /perf`
 - `POST /execute`
+- `POST /act`
 - `POST /task/plan`
 - `POST /predict`
 - `POST /explain`
@@ -299,6 +327,19 @@ Example execute payload:
 {
 	"action": "create",
 	"path": "notes.txt"
+}
+```
+
+Example action payload:
+
+```json
+{
+  "action": "activate",
+  "target": "Command Palette",
+  "context": {
+    "app": "code",
+    "domain": "generic"
+  }
 }
 ```
 
@@ -379,6 +420,7 @@ Key validations include:
 - stream state/control and macro execution paths
 - live SSE stream route and performance contract endpoint
 - closed-loop decision/feedback/correction behavior
+- one-step action interface resolution and execution behavior (`/act` + `iee act`)
 
 ## Engineering Rules
 

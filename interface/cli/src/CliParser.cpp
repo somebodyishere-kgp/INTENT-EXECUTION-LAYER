@@ -50,6 +50,8 @@ void CliParser::PrintHelp() {
     std::cout << "  iee state [--json]\n";
     std::cout << "  iee state/ai [--json]\n";
     std::cout << "  iee list-intents\n";
+    std::cout << "  iee act \"click export\" [--json]\n";
+    std::cout << "  iee act --action set_value --target \"search bar\" --value \"hello\" [--json]\n";
     std::cout << "  iee execute <intent> --target \"<label>\" [--value \"<value>\"]\n";
     std::cout << "  iee inspect\n";
     std::cout << "  iee graph [--json] [--delta_since <version>]\n";
@@ -70,6 +72,7 @@ void CliParser::PrintHelp() {
     std::cout << "  iee execute move --path \"file.txt\" --destination \"docs/\"\n";
     std::cout << "  iee execute delete --path \"file.txt\"\n";
     std::cout << "  iee execute create --path \"notes.txt\"\n";
+    std::cout << "  iee act \"type hello in search bar\" --pure-json\n";
 }
 
 }  // namespace iee

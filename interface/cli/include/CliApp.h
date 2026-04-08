@@ -17,6 +17,7 @@ private:
     int HandleState(const ParsedCommand& command, bool aiView);
     int HandleListIntents(const ParsedCommand& command);
     int HandleExecute(const ParsedCommand& command);
+    int HandleAct(const ParsedCommand& command);
     int HandleInspect(const ParsedCommand& command);
     int HandleExplain(const ParsedCommand& command);
     int HandleDebugIntents(const ParsedCommand& command);

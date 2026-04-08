@@ -1,7 +1,44 @@
-# IEE v1.8 Architecture
+# IEE v1.9 Architecture
 
 ## Purpose
-IEE v1.8 extends the v1.7 AI-facing layer with deterministic ranking semantics, specialized adapter selection, trace retrieval APIs, and machine-output CLI behavior. The system now includes structured `PlanScore` ranking, query-time AI state filtering, VS Code specialized adapter routing, reveal metadata v2, and strict perf sample activation.
+IEE v1.9 extends the v1.8 AI-facing layer with a deterministic Action Interface Layer (AIL) that enables one-step natural action execution through `POST /act` and `iee act`. The system now includes action request parsing, deterministic target resolution, context-aware execution orchestration, and structured failure diagnostics.
+
+## v1.9 Additions
+
+### Action Interface Layer (AI Hands)
+- Added new module:
+  - `core/action/include/ActionInterface.h`
+  - `core/action/src/ActionInterface.cpp`
+- New primitives:
+  - `ActionRequest` + `ActionContextHints`
+  - `TargetResolver`
+  - `ActionExecutor`
+  - JSON parse/serialize helpers for action I/O
+
+### Deterministic Target Resolution
+- `TargetResolver` ranks candidates using additive deterministic signals:
+  - label/fuzzy similarity
+  - planner score (`TaskPlanner`)
+  - visibility/reveal penalty
+  - app/domain context affinity
+  - recency and lightweight interaction memory
+- Candidate search is bounded (`maxCandidates <= 8`) and sorted with deterministic tie-breaks.
+- Ambiguity is surfaced as structured alternatives rather than non-deterministic auto-selection.
+
+### Action Execution Orchestration
+- `ActionExecutor` reuses existing runtime contracts:
+  - `IntentRegistry` + UIG snapshot refresh
+  - `TaskPlanner` for plan extraction
+  - `ExecutionContract` for reveal -> execute -> verify
+  - `ExecutionEngine` for adapter dispatch
+- Returned result always carries trace semantics and execution diagnostics.
+
+### Natural Action Semantics
+- Action normalization supports deterministic synonyms:
+  - `open/click/press/tap -> activate`
+  - `type/enter -> set_value`
+  - `goto/go_to/go -> navigate`
+- `navigate` resolves to `set_value` on address-like targets with explicit value propagation.
 
 ## v1.8 Additions
 
@@ -100,6 +137,7 @@ IEE v1.8 extends the v1.7 AI-facing layer with deterministic ranking semantics, 
   - `intent_binding`.
 - New AI/task endpoints:
   - `GET /state/ai`
+  - `POST /act`
   - `POST /task/plan` (planning-only)
   - `GET /trace/{trace_id}`
 - Performance strict mode:
@@ -122,6 +160,10 @@ IEE v1.8 extends the v1.7 AI-facing layer with deterministic ranking semantics, 
   - JSON mode emits graph + delta payload.
 - AI/task commands:
   - `iee demo presentation|browser [--json] [--run]`
+- Action interface commands:
+  - `iee act "open command palette"`
+  - `iee act --action set_value --target "search bar" --value "hello" [--app <hint>] [--domain <hint>]`
+  - supports `--json` and `--pure-json`
 - Global machine-output mode:
   - `--pure-json`
 - Performance strict mode:
@@ -133,7 +175,7 @@ IEE v1.8 extends the v1.7 AI-facing layer with deterministic ranking semantics, 
   - `IEEClient::GetStateAiJson()`
   - `IEEClient::Execute(...)` through `ExecutionContract`.
 
-## Core Flow (v1.8)
+## Core Flow (v1.9)
 1. Capture full UIA environment state.
 2. Build deterministic UIG nodes with stable `NodeId` identities.
 3. Build descriptor/state split for each node.
@@ -144,8 +186,10 @@ IEE v1.8 extends the v1.7 AI-facing layer with deterministic ranking semantics, 
 8. Plan high-level goals into deterministic candidates (`TaskPlanner`).
 9. Rank candidates by structured `PlanScore` and expose ranked plan envelopes.
 10. Enforce reveal-aware execution guarantees through `ExecutionContract`.
-11. Surface trace lookup, strict perf activation metadata, and machine-readable CLI outputs.
-12. Expose AI/task/contract metadata through API/CLI/SDK.
+11. Resolve one-step action requests through deterministic `TargetResolver` ranking.
+12. Execute resolved actions via `ActionExecutor` with contract-stage diagnostics.
+13. Surface trace lookup, strict perf activation metadata, and machine-readable CLI outputs.
+14. Expose AI/task/action/contract metadata through API/CLI/SDK.
 
 ## Determinism and Compatibility
 - Existing v1.5.1 and v1.6 API/CLI routes are preserved.

@@ -1,7 +1,7 @@
-# IEE v1.8 AI SDK and Task Interface
+# IEE v1.9 AI SDK and Task Interface
 
 ## Purpose
-IEE v1.8 extends the additive AI-facing layer with deterministic score decomposition, AI state filter modes, trace retrieval, and machine-output CLI behavior.
+IEE v1.9 extends the additive AI-facing layer with a deterministic Action Interface Layer (AIL) for one-step natural action execution.
 
 This layer is composed of:
 
@@ -10,6 +10,7 @@ This layer is composed of:
 - `PlanScore` for deterministic candidate ranking explanation
 - `AIStateView` for compact model-facing state projection
 - `ExecutionContract` + `RevealExecutor` for reveal-aware guaranteed execution
+- `ActionExecutor` + `TargetResolver` for one-step `action + target (+context)` execution
 
 ## SDK Surface
 
@@ -37,7 +38,7 @@ Primary API:
 - normalized `Intent`
 - `ExecutionContractResult` with reveal and verification status
 
-## Task Interface (v1.8)
+## Task Interface (v1.9, inherited from v1.8)
 
 Header: `core/interaction/include/TaskInterface.h`
 
@@ -66,11 +67,45 @@ Planner JSON includes:
 - legacy `candidates`
 - ranked `plans: [{ plan, score }]`
 
-## API Additions (v1.8)
+## Action Interface Layer (v1.9)
+
+Header: `core/action/include/ActionInterface.h`
+
+Action primitives:
+
+- `ActionRequest`
+- `ActionContextHints`
+- `ActionResolutionCandidate`
+- `TargetResolution`
+- `TargetResolver`
+- `ActionExecutionResult`
+- `ActionExecutor`
+
+Resolver behavior (deterministic):
+
+- bounded candidate ranking (`maxCandidates <= 8`)
+- weighted score factors:
+  - label/fuzzy similarity
+  - planner score
+  - visibility/reveal cost
+  - context affinity (`app`, `domain`)
+  - recency/memory signals
+- deterministic tie-break ordering and ambiguity reporting
+
+Executor behavior:
+
+1. parse and normalize action semantics
+2. resolve target deterministically
+3. build intent from resolved UIG node
+4. execute through `ExecutionContract` (`reveal -> execute -> verify`)
+5. return structured result with `trace_id`, execution status, and candidate diagnostics
+
+## API Additions (v1.9)
 
 Routes:
 
 - `GET /state/ai`
+- `POST /act`
 - `POST /task/plan`
 - `GET /trace/{trace_id}`
 
@@ -88,6 +123,32 @@ Routes:
 
 - strict status fields
 - `sample_activation_seeded` when strict mode bootstraps an empty sample window
+
+`POST /act` request body:
+
+```json
+{
+  "action": "activate",
+  "target": "Command Palette",
+  "value": "",
+  "context": {
+    "app": "code",
+    "domain": "generic"
+  }
+}
+```
+
+`POST /act` response highlights:
+
+- `status` (`success`/`failure`)
+- `trace_id`
+- `resolved_node_id`
+- `plan_used`
+- `reveal_used`
+- `verified`
+- `reason` (on failure)
+- `execution` contract summary
+- `candidates` (especially for ambiguity diagnostics)
 
 ## Execution Guarantee Layer
 
@@ -110,7 +171,7 @@ v1.8 reveal metadata includes:
 - `reveal_fallback_step_count`
 - execution-level `used_fallback`
 
-## CLI Quickstart (v1.8)
+## CLI Quickstart (v1.9)
 
 ```powershell
 # pure JSON machine mode
@@ -125,9 +186,13 @@ v1.8 reveal metadata includes:
 
 # strict perf snapshot
 ./build/Release/iee.exe perf --strict --json
+
+# one-step action interface
+./build/Release/iee.exe act "open command palette" --pure-json
+./build/Release/iee.exe act --action set_value --target "search bar" --value "github copilot" --domain browser --json
 ```
 
-## API Quickstart (v1.8)
+## API Quickstart (v1.9)
 
 ```powershell
 # start local API
@@ -149,6 +214,7 @@ Task planning payload:
 Sample endpoints:
 
 ```text
+POST /act
 GET  /state/ai?filter=relevant&goal=export%20menu&domain=presentation&top_n=5
 POST /task/plan
 POST /execute
