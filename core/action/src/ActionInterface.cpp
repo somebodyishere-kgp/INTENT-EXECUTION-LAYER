@@ -1,4 +1,5 @@
 #include "ActionInterface.h"
+#include "PlatformLayer.h"
 
 #include <Windows.h>
 
@@ -491,7 +492,12 @@ TargetResolution TargetResolver::Resolve(
         rankedCandidate.candidate = candidate;
         rankedCandidate.labelScore = LabelSimilarity(query, candidate.label);
 
-        const double plannerScore = std::clamp<double>(candidate.planScore.total > 0.0 ? candidate.planScore.total : candidate.score, 0.0, 1.0);
+        const double executionBias = ExecutionMemoryStore::SuccessBias(candidate.nodeId);
+        const double plannerScore = std::clamp<double>(
+            ((candidate.planScore.total > 0.0 ? candidate.planScore.total : candidate.score) * 0.85) +
+                (executionBias * 0.15),
+            0.0,
+            1.0);
         const double visibilityScore = VisibilityWeight(candidate);
         const double contextScore = ContextAffinity(context, snapshot, candidate);
         const double recencyScore = recencyByNode.count(candidate.nodeId) > 0U ? recencyByNode[candidate.nodeId] : 0.0;
@@ -502,7 +508,8 @@ TargetResolution TargetResolver::Resolve(
                 (0.25 * rankedCandidate.labelScore) +
                 (0.15 * visibilityScore) +
                 (0.10 * contextScore) +
-                (0.10 * std::max(recencyScore, memoryScore)),
+                (0.08 * std::max(recencyScore, memoryScore)) +
+                (0.02 * executionBias),
             0.0,
             1.0);
 
@@ -563,6 +570,196 @@ void TargetResolver::RecordSuccessfulResolution(
 
 std::string TargetResolver::BuildMemoryKey(const std::string& query, const ActionContextHints& context) {
     return ToAsciiLower(query) + "|" + ToAsciiLower(context.domain) + "|" + ToAsciiLower(context.app);
+}
+
+SelfHealingExecutor::SelfHealingExecutor(
+    IntentRegistry& registry,
+    ExecutionEngine& executionEngine,
+    Telemetry& telemetry)
+    : registry_(registry),
+      executionEngine_(executionEngine),
+      telemetry_(telemetry),
+      resolver_(registry) {}
+
+ExecutionResult SelfHealingExecutor::executeWithRecovery(const ExecutionPlan& plan) {
+    ExecutionResult result;
+    result.status = ExecutionStatus::FAILED;
+    result.method = "self_healing";
+    result.message = "recovery_plan_unavailable";
+
+    if (plan.steps.empty()) {
+        return result;
+    }
+
+    const std::string nodeId = plan.steps.front().targetId;
+    const auto node = ResolveNode(nodeId);
+    if (!node.has_value()) {
+        result.message = "recovery_node_unavailable";
+        return result;
+    }
+
+    Intent intent = InteractionGraphBuilder::GenerateIntent(*node);
+    const IntentAction action = IntentActionFromString(ToAsciiLower(plan.steps.front().action));
+    if (action != IntentAction::Unknown) {
+        intent.action = action;
+        intent.name = ToString(action);
+    }
+
+    intent.source = "self_healing";
+    intent.target.nodeId = node->id;
+    intent.constraints.maxRetries = std::min(intent.constraints.maxRetries, 1);
+    intent.constraints.allowFallback = true;
+
+    return executionEngine_.Execute(intent);
+}
+
+std::optional<InteractionNode> SelfHealingExecutor::ResolveNode(const std::string& nodeId) {
+    if (nodeId.empty()) {
+        return std::nullopt;
+    }
+
+    registry_.Refresh();
+    const ObserverSnapshot snapshot = registry_.LastSnapshot();
+    if (!snapshot.valid) {
+        return std::nullopt;
+    }
+
+    const InteractionGraph graph = InteractionGraphBuilder::Build(snapshot.uiElements, snapshot.sequence);
+    if (!graph.valid) {
+        return std::nullopt;
+    }
+
+    return InteractionGraphBuilder::FindNode(graph, nodeId);
+}
+
+Intent SelfHealingExecutor::BuildIntentFromNode(const Intent& templateIntent, const InteractionNode& node) const {
+    Intent intent = templateIntent;
+    intent.target.nodeId = node.id;
+
+    if (intent.target.label.empty()) {
+        intent.target.label = Wide(node.label);
+    }
+
+    return intent;
+}
+
+ActionExecutionResult SelfHealingExecutor::BuildFailureResult(
+    const std::string& traceId,
+    const std::vector<RecoveryAttempt>& attempts) const {
+    ActionExecutionResult result;
+    result.status = "failure";
+    result.traceId = traceId;
+    result.reason = "self_healing_exhausted";
+    result.recoveryAttempts = attempts;
+    result.recovered = false;
+    return result;
+}
+
+ActionExecutionResult SelfHealingExecutor::RecoverAction(
+    const ActionRequest& request,
+    const Intent& baseIntent,
+    const std::string& primaryNodeId,
+    const ExecutionPlan& plan,
+    const std::vector<ActionResolutionCandidate>& candidates) {
+    const std::string traceId = telemetry_.NewTraceId();
+    std::vector<RecoveryAttempt> attempts;
+    attempts.reserve(3U);
+
+    const auto executeContractAttempt = [&](const Intent& intent, const std::string& nodeId, int attemptId, const char* strategy) {
+        ExecutionContract contract(executionEngine_, registry_);
+        const ExecutionContractResult contractResult = contract.Execute(intent, nodeId);
+
+        RecoveryAttempt attempt;
+        attempt.attempt_id = attemptId;
+        attempt.strategy = strategy;
+        attempt.success = contractResult.contractSatisfied;
+        attempts.push_back(attempt);
+
+        telemetry_.LogFailure(
+            traceId,
+            "self_healing",
+            std::string("attempt=") + std::to_string(attemptId) +
+                ",strategy=" + strategy +
+                ",success=" + (attempt.success ? "true" : "false") +
+                ",stage=" + contractResult.stage);
+
+        if (!contractResult.contractSatisfied) {
+            return ActionExecutionResult{};
+        }
+
+        ActionExecutionResult recovered;
+        recovered.status = "success";
+        recovered.traceId = contractResult.execution.traceId.empty() ? traceId : contractResult.execution.traceId;
+        recovered.resolvedNodeId = nodeId;
+        recovered.hasPlan = true;
+        recovered.planUsed = plan;
+        recovered.revealUsed = contractResult.reveal.attempted;
+        recovered.verified = contractResult.execution.verified;
+        recovered.contractSatisfied = true;
+        recovered.executionStatus = ToString(contractResult.execution.status);
+        recovered.executionMethod = contractResult.execution.method;
+        recovered.executionMessage = contractResult.execution.message;
+        recovered.executionDurationMs = contractResult.execution.duration.count();
+        recovered.usedFallback = contractResult.execution.usedFallback;
+        recovered.recovered = true;
+        recovered.recoveryAttempts = attempts;
+        recovered.candidates = candidates;
+        return recovered;
+    };
+
+    Intent retryIntent = baseIntent;
+    retryIntent.constraints.maxRetries = std::min(retryIntent.constraints.maxRetries, 1);
+    ActionExecutionResult retryRecovered = executeContractAttempt(retryIntent, primaryNodeId, 1, "retry");
+    if (retryRecovered.status == "success") {
+        return retryRecovered;
+    }
+
+    const TargetResolution alternateResolution =
+        resolver_.Resolve(request.target, request.context, request.action, 8U);
+    std::string alternateNodeId;
+    for (const ActionResolutionCandidate& candidate : alternateResolution.alternatives) {
+        if (!candidate.nodeId.empty() && candidate.nodeId != primaryNodeId) {
+            alternateNodeId = candidate.nodeId;
+            break;
+        }
+    }
+
+    if (!alternateNodeId.empty()) {
+        const auto alternateNode = ResolveNode(alternateNodeId);
+        if (alternateNode.has_value()) {
+            const Intent alternateIntent = BuildIntentFromNode(baseIntent, *alternateNode);
+            ActionExecutionResult alternateRecovered =
+                executeContractAttempt(alternateIntent, alternateNodeId, 2, "alternate_node");
+            if (alternateRecovered.status == "success") {
+                return alternateRecovered;
+            }
+        } else {
+            RecoveryAttempt attempt;
+            attempt.attempt_id = 2;
+            attempt.strategy = "alternate_node";
+            attempt.success = false;
+            attempts.push_back(attempt);
+            telemetry_.LogFailure(traceId, "self_healing", "attempt=2,strategy=alternate_node,success=false,stage=resolve");
+        }
+    } else {
+        RecoveryAttempt attempt;
+        attempt.attempt_id = 2;
+        attempt.strategy = "alternate_node";
+        attempt.success = false;
+        attempts.push_back(attempt);
+        telemetry_.LogFailure(traceId, "self_healing", "attempt=2,strategy=alternate_node,success=false,stage=not_found");
+    }
+
+    Intent fallbackRevealIntent = baseIntent;
+    fallbackRevealIntent.params.values["reveal_action"] = L"fallback_reveal";
+    fallbackRevealIntent.constraints.maxRetries = 0;
+    ActionExecutionResult fallbackRecovered =
+        executeContractAttempt(fallbackRevealIntent, primaryNodeId, 3, "fallback_reveal");
+    if (fallbackRecovered.status == "success") {
+        return fallbackRecovered;
+    }
+
+    return BuildFailureResult(traceId, attempts);
 }
 
 ActionExecutor::ActionExecutor(IntentRegistry& registry, ExecutionEngine& executionEngine, Telemetry& telemetry)
@@ -674,6 +871,19 @@ ActionExecutionResult ActionExecutor::Act(const ActionRequest& request) {
         valueForAction,
         mappedAction);
 
+    const PermissionCheckResult policyCheck = PermissionPolicyStore::Check(intent);
+    if (!policyCheck.allowed) {
+        result.reason = "policy_denied";
+        result.executionStatus = "FAILED";
+        result.executionMethod = "policy";
+        result.executionMessage = policyCheck.reason;
+        result.contractSatisfied = false;
+        result.verified = false;
+        result.executionDurationMs = 0;
+        ExecutionMemoryStore::Record(result.resolvedNodeId, result);
+        return result;
+    }
+
     ExecutionContract contract(executionEngine_, registry_);
     const ExecutionContractResult contractResult = contract.Execute(intent, resolvedNode->id);
 
@@ -687,13 +897,30 @@ ActionExecutionResult ActionExecutor::Act(const ActionRequest& request) {
     result.executionStatus = ToString(contractResult.execution.status);
     result.executionMethod = contractResult.execution.method;
     result.executionMessage = contractResult.execution.message;
+    result.executionDurationMs = contractResult.execution.duration.count();
     result.usedFallback = contractResult.execution.usedFallback;
 
     if (contractResult.contractSatisfied) {
         result.status = "success";
         result.reason.clear();
         TargetResolver::RecordSuccessfulResolution(resolverQuery, request.context, resolvedNode->id);
+        ExecutionMemoryStore::Record(result.resolvedNodeId, result);
         return result;
+    }
+
+    SelfHealingExecutor selfHealing(registry_, executionEngine_, telemetry_);
+    ActionExecutionResult recovered = selfHealing.RecoverAction(
+        request,
+        intent,
+        resolvedNode->id,
+        result.planUsed,
+        result.candidates);
+
+    result.recoveryAttempts = recovered.recoveryAttempts;
+    if (recovered.status == "success") {
+        TargetResolver::RecordSuccessfulResolution(resolverQuery, request.context, recovered.resolvedNodeId);
+        ExecutionMemoryStore::Record(recovered.resolvedNodeId, recovered);
+        return recovered;
     }
 
     result.status = "failure";
@@ -703,9 +930,13 @@ ActionExecutionResult ActionExecutor::Act(const ActionRequest& request) {
         result.reason = "verification_failed";
     } else if (!contractResult.execution.message.empty()) {
         result.reason = contractResult.execution.message;
+    } else if (!recovered.reason.empty()) {
+        result.reason = recovered.reason;
     } else {
         result.reason = "execution_failed";
     }
+
+    ExecutionMemoryStore::Record(result.resolvedNodeId, result);
 
     return result;
 }
@@ -859,9 +1090,28 @@ std::string SerializeActionExecutionResultJson(const ActionExecutionResult& resu
     json << "\"status\":\"" << EscapeJson(result.executionStatus) << "\",";
     json << "\"method\":\"" << EscapeJson(result.executionMethod) << "\",";
     json << "\"message\":\"" << EscapeJson(result.executionMessage) << "\",";
+    json << "\"duration_ms\":" << result.executionDurationMs << ",";
     json << "\"contract_satisfied\":" << (result.contractSatisfied ? "true" : "false") << ",";
     json << "\"used_fallback\":" << (result.usedFallback ? "true" : "false");
     json << "}";
+
+    json << ",\"recovered\":" << (result.recovered ? "true" : "false");
+
+    if (!result.recoveryAttempts.empty()) {
+        json << ",\"recovery_attempts\":[";
+        for (std::size_t index = 0; index < result.recoveryAttempts.size(); ++index) {
+            if (index > 0) {
+                json << ",";
+            }
+            const RecoveryAttempt& attempt = result.recoveryAttempts[index];
+            json << "{";
+            json << "\"attempt_id\":" << attempt.attempt_id << ",";
+            json << "\"strategy\":\"" << EscapeJson(attempt.strategy) << "\",";
+            json << "\"success\":" << (attempt.success ? "true" : "false");
+            json << "}";
+        }
+        json << "]";
+    }
 
     if (!result.candidates.empty()) {
         json << ",\"candidates\":[";

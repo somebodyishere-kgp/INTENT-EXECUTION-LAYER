@@ -46,6 +46,13 @@ struct AdapterScore {
     float confidence{0.50F};
 };
 
+struct AdapterMetadata {
+    std::string name;
+    std::string version{"1.0"};
+    int priority{100};
+    std::vector<std::string> supportedActions;
+};
+
 struct AdapterDecisionCandidate {
     std::string adapterName;
     AdapterScore score;
@@ -82,8 +89,15 @@ public:
     // Adapter baseline score used by runtime reliability selection.
     virtual AdapterScore GetScore() const;
 
+    // Adapter metadata for ecosystem discovery and deterministic registration.
+    virtual AdapterMetadata GetMetadata() const;
+
     AdapterScore getScore() const {
         return GetScore();
+    }
+
+    AdapterMetadata getMetadata() const {
+        return GetMetadata();
     }
 
     // Optional event subscription hook for adapter-specific reactive behavior.
@@ -166,6 +180,8 @@ public:
 
     std::vector<Adapter*> GetAll() const;
     std::vector<std::shared_ptr<Adapter>> GetAdapters() const;
+
+    std::vector<AdapterMetadata> ListMetadata() const;
 
     std::vector<std::shared_ptr<Adapter>> getAdapters() const {
         return GetAdapters();

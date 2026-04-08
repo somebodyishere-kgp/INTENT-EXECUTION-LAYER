@@ -587,6 +587,18 @@ std::string SerializeEnvironmentStateJson(const EnvironmentState& state) {
     json << "\"occupancy_ratio\":" << state.perception.occupancyRatio << ",";
     json << "\"ui_signature\":" << state.perception.uiSignature << ",";
     json << "\"compute_ms\":" << state.perception.computeMs << ",";
+    json << "\"lightweight_text_detections\":" << state.perception.lightweightTextDetections << ",";
+    json << "\"grouped_region_count\":" << state.perception.groupedRegionCount << ",";
+    json << "\"region_labels\":[";
+
+    for (std::size_t index = 0; index < state.perception.regionLabels.size(); ++index) {
+        if (index > 0) {
+            json << ",";
+        }
+        json << "\"" << EscapeJson(state.perception.regionLabels[index]) << "\"";
+    }
+
+    json << "],";
     json << "\"regions\":[";
 
     for (std::size_t index = 0; index < state.perception.regions.size(); ++index) {
@@ -1724,6 +1736,43 @@ std::string IntentApiServer::HandleRequest(const std::string& request) {
         return BuildResponse(200, "OK", telemetry_.SerializePersistenceJson());
     }
 
+    if (method == "GET" && path == "/execution/memory") {
+        const std::size_t limit = ReadQuerySize(query, "limit", 128U, 1U, 4096U);
+        return BuildResponse(200, "OK", ExecutionMemoryStore::SerializeJson(limit));
+    }
+
+    if (method == "GET" && path == "/adapters") {
+        const std::vector<AdapterMetadata> metadata = executionEngine_.ListAdapterMetadata();
+
+        std::ostringstream json;
+        json << "{";
+        json << "\"count\":" << metadata.size() << ",";
+        json << "\"adapters\":[";
+        for (std::size_t index = 0; index < metadata.size(); ++index) {
+            if (index > 0) {
+                json << ",";
+            }
+
+            json << "{";
+            json << "\"name\":\"" << EscapeJson(metadata[index].name) << "\",";
+            json << "\"version\":\"" << EscapeJson(metadata[index].version) << "\",";
+            json << "\"priority\":" << metadata[index].priority << ",";
+            json << "\"supported_actions\":[";
+            for (std::size_t actionIndex = 0; actionIndex < metadata[index].supportedActions.size(); ++actionIndex) {
+                if (actionIndex > 0) {
+                    json << ",";
+                }
+                json << "\"" << EscapeJson(metadata[index].supportedActions[actionIndex]) << "\"";
+            }
+            json << "]";
+            json << "}";
+        }
+        json << "]";
+        json << "}";
+
+        return BuildResponse(200, "OK", json.str());
+    }
+
     if (method == "GET" && path.rfind("/trace/", 0) == 0) {
         const std::string rawTraceId = path.substr(std::string("/trace/").size());
         const std::string traceId = UrlDecode(rawTraceId);
@@ -1756,6 +1805,7 @@ std::string IntentApiServer::HandleRequest(const std::string& request) {
         }
 
         EnsureUnifiedState(&state);
+        temporalStateEngine_.Record(state);
 
         std::ostringstream json;
         json << "{";
@@ -1778,6 +1828,7 @@ std::string IntentApiServer::HandleRequest(const std::string& request) {
         }
 
         EnsureUnifiedState(&state);
+        temporalStateEngine_.Record(state);
 
         AIStateViewProjector projector;
         const AIStateView view = projector.Build(state, runtimeActive);
@@ -1816,6 +1867,11 @@ std::string IntentApiServer::HandleRequest(const std::string& request) {
         return BuildResponse(200, "OK", json.str());
     }
 
+    if (method == "GET" && path == "/state/history") {
+        const std::size_t limit = ReadQuerySize(query, "limit", 64U, 1U, 256U);
+        return BuildResponse(200, "OK", temporalStateEngine_.SerializeJson(limit));
+    }
+
     if (method == "GET" && path == "/stream/frame") {
         bool runtimeActive = false;
         EnvironmentState state;
@@ -1824,6 +1880,7 @@ std::string IntentApiServer::HandleRequest(const std::string& request) {
         }
 
         EnsureUnifiedState(&state);
+        temporalStateEngine_.Record(state);
 
         VisionLatencySample visionSample;
         visionSample.frameId = state.screenState.frameId;
@@ -1926,6 +1983,7 @@ std::string IntentApiServer::HandleRequest(const std::string& request) {
         }
 
         EnsureUnifiedState(&state);
+        temporalStateEngine_.Record(state);
 
         const InteractionGraph& currentGraph = state.unifiedState.interactionGraph;
         const auto deltaSinceIt = query.find("delta_since");
@@ -2017,6 +2075,7 @@ std::string IntentApiServer::HandleRequest(const std::string& request) {
         }
 
         EnsureUnifiedState(&state);
+        temporalStateEngine_.Record(state);
 
         const auto node = InteractionGraphBuilder::FindNode(state.unifiedState.interactionGraph, nodeId);
         if (!node.has_value()) {
@@ -2049,6 +2108,25 @@ std::string IntentApiServer::HandleRequest(const std::string& request) {
         json << "\"transport\":\"sse\",";
         json << "\"events\":" << events << ",";
         json << "\"interval_ms\":" << intervalMs;
+        json << "}";
+        return BuildResponse(200, "OK", json.str());
+    }
+
+    if (method == "GET" && path == "/perf/percentiles") {
+        const std::size_t limit = ReadQuerySize(query, "limit", 200U, 1U, 4096U);
+        return BuildResponse(200, "OK", telemetry_.SerializeLatencyPercentilesJson(limit));
+    }
+
+    if (method == "GET" && path == "/perf/frame-consistency") {
+        const std::size_t limit = ReadQuerySize(query, "limit", 64U, 1U, 256U);
+        const FrameConsistencyMetrics metrics = temporalStateEngine_.FrameConsistency(limit);
+
+        std::ostringstream json;
+        json << "{";
+        json << "\"expected_frames\":" << metrics.expectedFrames << ",";
+        json << "\"actual_frames\":" << metrics.actualFrames << ",";
+        json << "\"skipped_frames\":" << metrics.skippedFrames << ",";
+        json << "\"coherency_score\":" << metrics.score;
         json << "}";
         return BuildResponse(200, "OK", json.str());
     }
@@ -2112,6 +2190,40 @@ std::string IntentApiServer::HandleRequest(const std::string& request) {
         }
 
         return BuildResponse(200, "OK", json.str());
+    }
+
+    if (method == "GET" && path == "/policy") {
+        const PermissionPolicy policy = PermissionPolicyStore::Get();
+        return BuildResponse(200, "OK", PermissionPolicyStore::SerializeJson(policy));
+    }
+
+    if (method == "POST" && path == "/policy") {
+        std::map<std::string, std::string> payload;
+        std::string jsonError;
+        if (!ParseFlatJsonObject(body, &payload, &jsonError)) {
+            return BuildErrorResponse(400, "Bad Request", "invalid_json", jsonError);
+        }
+
+        PermissionPolicy policy = PermissionPolicyStore::Get();
+
+        bool parsedBool = false;
+        const std::string allowExecute = ReadPayloadValue(payload, {"allow_execute"});
+        if (!allowExecute.empty() && ParseBoolString(allowExecute, &parsedBool)) {
+            policy.allow_execute = parsedBool;
+        }
+
+        const std::string allowFileOps = ReadPayloadValue(payload, {"allow_file_ops"});
+        if (!allowFileOps.empty() && ParseBoolString(allowFileOps, &parsedBool)) {
+            policy.allow_file_ops = parsedBool;
+        }
+
+        const std::string allowSystemChanges = ReadPayloadValue(payload, {"allow_system_changes"});
+        if (!allowSystemChanges.empty() && ParseBoolString(allowSystemChanges, &parsedBool)) {
+            policy.allow_system_changes = parsedBool;
+        }
+
+        policy = PermissionPolicyStore::Apply(policy);
+        return BuildResponse(200, "OK", PermissionPolicyStore::SerializeJson(policy));
     }
 
     if (method == "POST" && path == "/control/start") {
@@ -2323,6 +2435,9 @@ std::string IntentApiServer::HandleRequest(const std::string& request) {
             if (actionResult.reason == "ambiguous_target") {
                 statusCode = 409;
                 statusText = "Conflict";
+            } else if (actionResult.reason == "policy_denied") {
+                statusCode = 403;
+                statusText = "Forbidden";
             } else if (
                 actionResult.reason == "missing_target" ||
                 actionResult.reason == "missing_value" ||
@@ -2336,6 +2451,117 @@ std::string IntentApiServer::HandleRequest(const std::string& request) {
         }
 
         return BuildResponse(statusCode, statusText, payload);
+    }
+
+    if (method == "POST" && path == "/act/sequence") {
+        IntentSequence sequence;
+        std::string parseError;
+        if (!ParseIntentSequenceJson(body, &sequence, &parseError)) {
+            return BuildErrorResponse(
+                400,
+                "Bad Request",
+                "invalid_sequence",
+                parseError.empty() ? "Unable to parse sequence payload" : parseError);
+        }
+
+        IntentSequenceExecutor sequenceExecutor(registry_, executionEngine_, telemetry_);
+        const IntentSequenceExecutionResult sequenceResult = sequenceExecutor.Execute(sequence, true);
+        const std::string payload = SerializeIntentSequenceExecutionResultJson(sequenceResult);
+        const int statusCode = sequenceResult.status == "success" ? 200 : 500;
+        return BuildResponse(statusCode, statusCode == 200 ? "OK" : "Internal Server Error", payload);
+    }
+
+    if (method == "POST" && path == "/workflow/run") {
+        IntentSequence sequence;
+        std::string parseError;
+        if (!ParseIntentSequenceJson(body, &sequence, &parseError)) {
+            return BuildErrorResponse(
+                400,
+                "Bad Request",
+                "invalid_workflow",
+                parseError.empty() ? "Unable to parse workflow sequence" : parseError);
+        }
+
+        WorkflowExecutor workflowExecutor(registry_, executionEngine_, telemetry_);
+        IntentSequenceExecutionResult workflowResult = workflowExecutor.runWorkflow(sequence);
+        const std::string payload = SerializeIntentSequenceExecutionResultJson(workflowResult);
+        const int statusCode = workflowResult.status == "success" ? 200 : 500;
+        return BuildResponse(statusCode, statusCode == 200 ? "OK" : "Internal Server Error", payload);
+    }
+
+    if (method == "POST" && path == "/task/semantic") {
+        SemanticTaskRequest semanticRequest;
+        std::string parseError;
+        if (!SemanticPlannerBridge::ParseSemanticTaskRequestJson(body, &semanticRequest, &parseError)) {
+            return BuildErrorResponse(
+                400,
+                "Bad Request",
+                "invalid_semantic_request",
+                parseError.empty() ? "Unable to parse semantic request" : parseError);
+        }
+
+        bool runtimeActive = false;
+        EnvironmentState state;
+        if (!CaptureEnvironmentState(controlRuntime_, streamEnvironmentAdapter_, &state, &runtimeActive)) {
+            return BuildErrorResponse(503, "Service Unavailable", "semantic_state_unavailable", "Unable to capture environment state");
+        }
+
+        EnsureUnifiedState(&state);
+        temporalStateEngine_.Record(state);
+
+        const SemanticPlanResult semanticPlan = SemanticPlannerBridge::Plan(semanticRequest);
+
+        std::ostringstream json;
+        json << "{";
+        json << "\"runtime_active\":" << (runtimeActive ? "true" : "false") << ",";
+        json << "\"semantic\":" << SemanticPlannerBridge::SerializePlanJson(semanticPlan);
+
+        if (!semanticPlan.sequenceGenerated) {
+            TaskPlanner planner;
+            const TaskPlanResult plan = planner.Plan(semanticPlan.taskRequest, state.unifiedState.interactionGraph);
+            json << ",\"task_plan\":" << TaskPlanner::SerializeJson(plan);
+            json << ",\"plans\":" << TaskPlanner::SerializeRankedPlansJson(plan);
+        }
+
+        json << "}";
+        return BuildResponse(200, "OK", json.str());
+    }
+
+    if (method == "POST" && path == "/ucp/act") {
+        ActionRequest actionRequest;
+        std::string parseError;
+        if (!ParseActionRequestJson(body, &actionRequest, &parseError)) {
+            return BuildErrorResponse(
+                400,
+                "Bad Request",
+                "invalid_ucp_act",
+                parseError.empty() ? "Unable to parse UCP action payload" : parseError);
+        }
+
+        ActionExecutor actionExecutor(registry_, executionEngine_, telemetry_);
+        const ActionExecutionResult actionResult = actionExecutor.Act(actionRequest);
+        const int statusCode = actionResult.status == "success" ? 200 :
+            (actionResult.reason == "ambiguous_target" ? 409 :
+                (actionResult.reason == "policy_denied" ? 403 : 500));
+        return BuildResponse(
+            statusCode,
+            statusCode == 200 ? "OK" : (statusCode == 409 ? "Conflict" : (statusCode == 403 ? "Forbidden" : "Internal Server Error")),
+            SerializeUcpActEnvelope(actionResult));
+    }
+
+    if (method == "GET" && path == "/ucp/state") {
+        bool runtimeActive = false;
+        EnvironmentState state;
+        if (!CaptureEnvironmentState(controlRuntime_, streamEnvironmentAdapter_, &state, &runtimeActive)) {
+            return BuildErrorResponse(503, "Service Unavailable", "ucp_state_unavailable", "Unable to capture environment state");
+        }
+
+        EnsureUnifiedState(&state);
+        temporalStateEngine_.Record(state);
+
+        AIStateViewProjector projector;
+        const AIStateView view = projector.Build(state, runtimeActive);
+        return BuildResponse(200, "OK", SerializeUcpStateEnvelope(view));
     }
 
     if (method == "POST" && path == "/task/plan") {
@@ -2367,6 +2593,7 @@ std::string IntentApiServer::HandleRequest(const std::string& request) {
         }
 
         EnsureUnifiedState(&state);
+        temporalStateEngine_.Record(state);
 
         TaskPlanner planner;
         const TaskPlanResult plan = planner.Plan(taskRequest, state.unifiedState.interactionGraph);
@@ -2576,6 +2803,11 @@ std::string IntentApiServer::HandleRequest(const std::string& request) {
         const std::string nodeId = ReadPayloadValue(payload, {"node_id", "nodeId"});
         if (!nodeId.empty()) {
             intent.target.nodeId = nodeId;
+        }
+
+        const PermissionCheckResult policyCheck = PermissionPolicyStore::Check(intent);
+        if (!policyCheck.allowed) {
+            return BuildErrorResponse(403, "Forbidden", "policy_denied", policyCheck.reason);
         }
 
         const std::string executionMode = ToAsciiLower(ReadPayloadValue(payload, {"mode", "execution_mode"}));

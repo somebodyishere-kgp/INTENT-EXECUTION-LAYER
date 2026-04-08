@@ -32,6 +32,16 @@ std::string Narrow(const std::wstring& value) {
     return result;
 }
 
+std::string LowerAscii(std::string value) {
+    std::transform(value.begin(), value.end(), value.begin(), [](unsigned char ch) {
+        if (ch >= 'A' && ch <= 'Z') {
+            return static_cast<char>(ch - 'A' + 'a');
+        }
+        return static_cast<char>(ch);
+    });
+    return value;
+}
+
 std::uint64_t ToTicks(std::chrono::system_clock::time_point timestamp) {
     const auto sinceEpoch = std::chrono::duration_cast<std::chrono::milliseconds>(timestamp.time_since_epoch());
     return static_cast<std::uint64_t>(sinceEpoch.count());
@@ -104,6 +114,30 @@ float CompositeScore(const AdapterScore& score) {
 
 AdapterScore Adapter::GetScore() const {
     return AdapterScore{};
+}
+
+AdapterMetadata Adapter::GetMetadata() const {
+    AdapterMetadata metadata;
+    metadata.name = Name();
+    metadata.version = "1.0";
+
+    const std::string lowerName = LowerAscii(Name());
+    if (lowerName.find("filesystem") != std::string::npos) {
+        metadata.priority = 10;
+        metadata.supportedActions = {"create", "delete", "move"};
+    } else if (lowerName.find("uia") != std::string::npos || lowerName.find("input") != std::string::npos) {
+        metadata.priority = 50;
+        metadata.supportedActions = {"activate", "select", "set_value"};
+    } else {
+        metadata.priority = 100;
+    }
+
+    std::sort(metadata.supportedActions.begin(), metadata.supportedActions.end());
+    metadata.supportedActions.erase(
+        std::unique(metadata.supportedActions.begin(), metadata.supportedActions.end()),
+        metadata.supportedActions.end());
+
+    return metadata;
 }
 
 void Adapter::Subscribe(EventBus&) {
@@ -798,6 +832,29 @@ std::vector<Adapter*> AdapterRegistry::GetAll() const {
 std::vector<std::shared_ptr<Adapter>> AdapterRegistry::GetAdapters() const {
     std::shared_lock<std::shared_mutex> lock(mutex_);
     return adapters_;
+}
+
+std::vector<AdapterMetadata> AdapterRegistry::ListMetadata() const {
+    std::shared_lock<std::shared_mutex> lock(mutex_);
+
+    std::vector<AdapterMetadata> metadata;
+    metadata.reserve(adapters_.size());
+
+    for (const auto& adapter : adapters_) {
+        if (adapter == nullptr) {
+            continue;
+        }
+        metadata.push_back(adapter->GetMetadata());
+    }
+
+    std::sort(metadata.begin(), metadata.end(), [](const AdapterMetadata& left, const AdapterMetadata& right) {
+        if (left.priority != right.priority) {
+            return left.priority < right.priority;
+        }
+        return left.name < right.name;
+    });
+
+    return metadata;
 }
 
 Adapter* AdapterRegistry::Resolve(const Intent& intent) const {

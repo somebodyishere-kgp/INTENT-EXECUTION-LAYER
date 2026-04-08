@@ -1,136 +1,107 @@
-# IEE v1.9 AI SDK and Task Interface
+# IEE v2.0 AI SDK and Platform Interface
 
 ## Purpose
-IEE v1.9 extends the additive AI-facing layer with a deterministic Action Interface Layer (AIL) for one-step natural action execution.
+IEE v2.0 keeps the v1.x SDK surfaces stable while adding platform-level deterministic contracts for semantic planning, policy gating, temporal state, sequence/workflow orchestration, and UCP envelopes.
 
-This layer is composed of:
-
-- `IEEClient` for stateless state retrieval and execution
-- `TaskRequest` + `TaskPlanner` for planning-only task decomposition
-- `PlanScore` for deterministic candidate ranking explanation
-- `AIStateView` for compact model-facing state projection
-- `ExecutionContract` + `RevealExecutor` for reveal-aware guaranteed execution
-- `ActionExecutor` + `TargetResolver` for one-step `action + target (+context)` execution
-
-## SDK Surface
+## Primary SDK Surface
 
 Header: `interface/sdk/include/IEEClient.h`
 
-Example usage source:
-
-- `interface/sdk/examples/ai_client_example.cpp`
-
-Primary API:
+Core calls:
 
 - `EnvironmentState IEEClient::GetState()`
 - `std::string IEEClient::GetStateAiJson()`
 - `ClientExecuteResponse IEEClient::Execute(const ClientExecuteRequest& request)`
 
-`ClientExecuteRequest` supports:
+These remain compatibility-stable in v2.0.
 
-- intent action (`activate`, `set_value`, `select`, `create`, `delete`, `move`)
-- UI/file targets
-- optional `nodeId` for reveal-aware contract execution
-- timeout/retry/verification controls
-
-`ClientExecuteResponse` returns:
-
-- normalized `Intent`
-- `ExecutionContractResult` with reveal and verification status
-
-## Task Interface (v1.9, inherited from v1.8)
-
-Header: `core/interaction/include/TaskInterface.h`
-
-Task primitives:
-
-- `TaskRequest`
-- `TaskPlanCandidate`
-- `PlanScore`
-- `TaskPlanResult`
-- `TaskPlanner`
-
-Planner behavior:
-
-- deterministic node ordering and scoring
-- optional hidden-node planning
-- domain bias (`generic`, `presentation`, `browser`)
-- stable `task_id` derived from request + graph version
-- per-candidate score decomposition:
-  - `relevance`
-  - `execution_cost`
-  - `success_probability`
-  - `total`
-
-Planner JSON includes:
-
-- legacy `candidates`
-- ranked `plans: [{ plan, score }]`
-
-## Action Interface Layer (v1.9)
+## Action Interface Layer (v2.0)
 
 Header: `core/action/include/ActionInterface.h`
 
-Action primitives:
+Contracts:
 
 - `ActionRequest`
-- `ActionContextHints`
-- `ActionResolutionCandidate`
-- `TargetResolution`
 - `TargetResolver`
-- `ActionExecutionResult`
 - `ActionExecutor`
+- `RecoveryAttempt`
+- `ActionExecutionResult`
+- `SelfHealingExecutor`
 
-Resolver behavior (deterministic):
+v2 additions:
 
-- bounded candidate ranking (`maxCandidates <= 8`)
-- weighted score factors:
-  - label/fuzzy similarity
-  - planner score
-  - visibility/reveal cost
-  - context affinity (`app`, `domain`)
-  - recency/memory signals
-- deterministic tie-break ordering and ambiguity reporting
+- recovery metadata in action result (`recovered`, `recovery_attempts`)
+- policy-aware failure path (`policy_denied`)
+- execution memory recording for adaptive deterministic ranking
 
-Executor behavior:
+## Platform Layer (New in v2.0)
 
-1. parse and normalize action semantics
-2. resolve target deterministically
-3. build intent from resolved UIG node
-4. execute through `ExecutionContract` (`reveal -> execute -> verify`)
-5. return structured result with `trace_id`, execution status, and candidate diagnostics
+Header: `core/platform/include/PlatformLayer.h`
 
-## API Additions (v1.9)
+### Policy
 
-Routes:
+- `PermissionPolicy`
+- `PermissionPolicyStore`
+- `PermissionCheckResult`
 
-- `GET /state/ai`
-- `POST /act`
-- `POST /task/plan`
-- `GET /trace/{trace_id}`
+### Experience Memory
 
-`GET /state/ai` filter query options:
+- `SuccessStats`
+- `ExecutionMemory`
+- `ExecutionMemoryStore`
 
-- `filter=interactive`
-- `filter=visible`
-- `filter=relevant`
-- `goal=<text>`
-- `domain=generic|presentation|browser`
-- `top_n=<1..64>`
-- `include_hidden=true|false`
+### Temporal State
 
-`GET /perf?strict=true` now includes:
+- `TemporalStateEngine`
+- `StateHistory`
+- `StateTransitionInfo`
+- `FrameConsistencyMetrics`
 
-- strict status fields
-- `sample_activation_seeded` when strict mode bootstraps an empty sample window
+### Sequence and Workflow
 
-`POST /act` request body:
+- `IntentSequence`
+- `IntentSequenceExecutor`
+- `WorkflowExecutor`
+
+### Semantic Bridge
+
+- `SemanticTaskRequest`
+- `SemanticPlanResult`
+- `SemanticPlannerBridge`
+
+### UCP
+
+- `SerializeUcpActEnvelope(...)`
+- `SerializeUcpStateEnvelope(...)`
+
+## API Additions (v2.0)
+
+New/expanded routes:
+
+- `GET /execution/memory`
+- `GET /adapters`
+- `GET /state/history`
+- `GET /policy`
+- `POST /policy`
+- `GET /perf/percentiles`
+- `GET /perf/frame-consistency`
+- `POST /act/sequence`
+- `POST /workflow/run`
+- `POST /task/semantic`
+- `POST /ucp/act`
+- `GET /ucp/state`
+
+Retained v1.x core routes:
+
+- `/execute`, `/act`, `/task/plan`, `/state/ai`, `/interaction-graph`, `/interaction-node/{id}`, `/trace/{trace_id}`, `/predict`, `/perf`, `/stream/*`, `/control/*`
+
+## Semantic Request Contract
+
+`POST /task/semantic`
 
 ```json
 {
-  "action": "activate",
-  "target": "Command Palette",
-  "value": "",
+  "goal": "click Save then click Save",
   "context": {
     "app": "code",
     "domain": "generic"
@@ -138,86 +109,67 @@ Routes:
 }
 ```
 
-`POST /act` response highlights:
+Response includes:
 
-- `status` (`success`/`failure`)
-- `trace_id`
-- `resolved_node_id`
-- `plan_used`
-- `reveal_used`
-- `verified`
-- `reason` (on failure)
-- `execution` contract summary
-- `candidates` (especially for ambiguity diagnostics)
+- `semantic.mode` (`task_request` or `intent_sequence`)
+- `semantic.sequence_generated`
+- deterministic diagnostics string
+- generated task request or sequence envelope
 
-## Execution Guarantee Layer
+## Sequence Contract
 
-Headers:
-
-- `core/execution/include/RevealExecutor.h`
-- `core/execution/include/ExecutionContract.h`
-
-Contract flow:
-
-1. Resolve node metadata (when `nodeId` is provided)
-2. Execute reveal strategy if required
-3. Execute intent through `ExecutionEngine`
-4. Enforce verification outcome
-
-v1.8 reveal metadata includes:
-
-- `reveal_total_step_attempts`
-- `reveal_fallback_used`
-- `reveal_fallback_step_count`
-- execution-level `used_fallback`
-
-## CLI Quickstart (v1.9)
-
-```powershell
-# pure JSON machine mode
-./build/Release/iee.exe state/ai --pure-json
-
-# deterministic planning demos with score decomposition
-./build/Release/iee.exe demo presentation --pure-json
-./build/Release/iee.exe demo browser --pure-json
-
-# pure-json execute result
-./build/Release/iee.exe execute create --path notes.txt --pure-json
-
-# strict perf snapshot
-./build/Release/iee.exe perf --strict --json
-
-# one-step action interface
-./build/Release/iee.exe act "open command palette" --pure-json
-./build/Release/iee.exe act --action set_value --target "search bar" --value "github copilot" --domain browser --json
-```
-
-## API Quickstart (v1.9)
-
-```powershell
-# start local API
-./build/Release/iee.exe api --port 8787
-```
-
-Task planning payload:
+`POST /act/sequence` and `POST /workflow/run`
 
 ```json
 {
-  "goal": "export hidden menu",
-  "target": "Export",
-  "domain": "presentation",
-  "allow_hidden": "true",
-  "max_plans": "3"
+  "steps": [
+    { "action": "activate", "target": "Save" },
+    { "action": "activate", "target": "Save" }
+  ]
 }
 ```
 
-Sample endpoints:
+Response includes attempted/completed counts, failed step index, trace id, and per-step execution result envelopes.
 
-```text
-POST /act
-GET  /state/ai?filter=relevant&goal=export%20menu&domain=presentation&top_n=5
-POST /task/plan
-POST /execute
-GET  /trace/{trace_id}
-GET  /perf?strict=true
+## UCP Envelope Contract
+
+### Act
+
+`POST /ucp/act`
+
+Response:
+
+```json
+{
+  "ucp_version": "1.0",
+  "operation": "act",
+  "result": { "status": "success", "trace_id": "..." }
+}
 ```
+
+### State
+
+`GET /ucp/state`
+
+Response:
+
+```json
+{
+  "ucp_version": "1.0",
+  "operation": "state",
+  "state": { "sequence": 42, "interaction_summary": { } }
+}
+```
+
+## Determinism and Runtime Guarantees
+
+- bounded candidate counts and stable tie-break ordering
+- bounded self-healing attempts with fixed strategy order
+- no stochastic model dependency in core runtime path
+- policy checks are deterministic and centralized
+
+## Validation Baseline
+
+- `cmake --build build --config Release`
+- `ctest --test-dir build -C Release --output-on-failure`
+- Integration hardening includes v2 route assertions.

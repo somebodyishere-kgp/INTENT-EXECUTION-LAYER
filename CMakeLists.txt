@@ -37,6 +37,7 @@ add_library(iee_core
     core/interaction/src/InteractionGraph.cpp
     core/interaction/src/TaskInterface.cpp
     core/observer/src/ObserverEngine.cpp
+    core/platform/src/PlatformLayer.cpp
     core/telemetry/src/Telemetry.cpp
     interface/api/src/IntentApiServer.cpp
     interface/sdk/src/IEEClient.cpp
@@ -51,6 +52,7 @@ target_include_directories(iee_core PUBLIC
     core/intent/include
     core/interaction/include
     core/observer/include
+    core/platform/include
     core/telemetry/include
     interface/api/include
     interface/cli/include

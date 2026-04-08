@@ -1,83 +1,64 @@
-# IEE Context Handoff (v1.9)
+# IEE Context Handoff (v2.0)
 
 ## 1. What Are We Building
-The Intent Execution Engine (IEE): a deterministic native execution layer that maps live OS/application state into executable intent space.
+IEE is a deterministic native execution/control plane that maps live software state into executable intents and verified action contracts.
 
-v1.9 extends v1.8 with a minimal, deterministic Action Interface Layer (AI Hands) that allows one-step natural action execution through API/CLI while reusing existing planner, reveal, and execution contracts.
+v2.0 (Phase 11) extends v1.9 from an action-enabled runtime to a platformized execution layer with policy, memory, semantic orchestration, temporal state intelligence, and protocolized envelopes.
 
 ## 2. Current State
-Completed in v1.9:
-- New action module (`core/action`):
-  - `ActionRequest`, `ActionContextHints`
-  - `TargetResolver` deterministic scoring and bounded candidate ranking
-  - `ActionExecutor` orchestration through `TaskPlanner` + `ExecutionContract`
-  - parse/serialize helpers for action request/response JSON
-- One-step action API:
-  - added `POST /act`
-  - structured parse and execution failures with stable reason codes
-  - ambiguity path returns candidate alternatives and confidence values
-- One-step action CLI:
-  - added `iee act` command path
-  - supports both explicit options and phrase parsing (`click/open/type/navigate/go to`)
-  - supports `--json` and global `--pure-json`
-- Deterministic behavior guarantees:
-  - bounded candidate set (`<=8`)
-  - deterministic ranking tie-breaks
-  - context-aware app/domain weighting
-  - optional interaction-frequency memory weighting
-- Tests:
-  - added `integration_action_interface`
-  - added `scenario_action_interface`
-  - CTest now includes 19 tests with full pass in Release
+Completed:
 
-Retained in v1.9:
-- v1.8 planner score model and ranked plans payloads
-- `GET /state/ai` filter modes
-- `VSCodeAdapter` specialization
-- reveal metadata v2 and strict perf activation path
-- `GET /trace/{trace_id}` and global `--pure-json`
+- New `core/platform` module with policy, memory, temporal, sequence/workflow, semantic, and UCP contracts.
+- Action layer upgraded with self-healing recovery and richer execution metadata.
+- Adapter ecosystem metadata surfaced through execution engine and API.
+- Perception model expanded with lightweight text/grouping region features.
+- Telemetry expanded with percentile snapshots and serialization APIs.
+- API server expanded with phase routes:
+  - `/execution/memory`, `/adapters`, `/state/history`
+  - `/policy` (GET/POST)
+  - `/perf/percentiles`, `/perf/frame-consistency`
+  - `/act/sequence`, `/workflow/run`, `/task/semantic`
+  - `/ucp/act`, `/ucp/state`
+- Mandatory docs and README synchronized to v2.0.
+- Integration API hardening expanded for new routes.
 
-Retained behavior:
-- Existing v1.5.1-v1.7 APIs and routes remain additive-compatible.
-- Existing telemetry/control runtime/event flow remains intact.
+Partially built:
+
+- Persisted execution-memory backend (currently in-memory only).
+- Extended semantic provider integration (currently deterministic-rule path).
 
 ## 3. Last Work Done
-- Implemented v1.9 action-interface code paths across:
-  - `core/action/include/ActionInterface.h`
-  - `core/action/src/ActionInterface.cpp`
-  - `interface/api/src/IntentApiServer.cpp` (`POST /act`)
-  - `interface/cli/include/CliApp.h`
-  - `interface/cli/src/CliApp.cpp` (`iee act`)
-  - `interface/cli/src/CliParser.cpp` help/update
-  - `CMakeLists.txt` (new tests and action module wiring)
-  - `tests/integration_action_interface.cpp`
-  - `tests/scenario_action_interface.cpp`
-- Build and verification:
-  - `cmake --build build --config Release`
-  - `ctest --test-dir build -C Release --output-on-failure`
-  - result: 19/19 tests passed
+- Fixed two v2 compile blockers:
+  - invalid node field access in self-healing path
+  - missing UTF helper in perception translation unit
+- Rebuilt Release successfully.
+- Ran full Release tests (19/19 pass).
+- Extended `tests/integration_api_hardening.cpp` with v2 route assertions.
+- Updated required docs and README to v2.0 platformization state.
 
 ## 4. Current Problem
-No active blocker.
+No blocking compile/test issue.
 
-Known non-blocking considerations:
-1. Action memory weighting is process-local and non-persistent.
-2. Domain/app affinity scoring is deterministic and heuristic by design.
-3. Adapter specialization remains VS Code-first; broader app specialization is future work.
+Known environment caveat:
+- VS Code CMake Tools integration returned configure failures in this session; command-line build/test remained green.
 
 ## 5. Next Plan
-1. Add optional persisted action-memory backend (disk-backed frequency cache).
-2. Add app-domain resolver profiles for browser/office/dev-tool families.
-3. Add direct API hardening checks for `/act` malformed and edge payloads.
-4. Add contract versioning option to compact duplicate planning payloads.
+1. Add persistent execution-memory storage with bounded retention.
+2. Add semantic provider plug-in interface while preserving deterministic fallback.
+3. Expand UCP versioning/negotiation contract beyond v1 envelopes.
+4. Add dedicated scenario test for self-healing alternate-node success path.
+5. Add CLI wrappers for selected v2 API routes (`policy`, `sequence`, `workflow`, `semantic`, `ucp`) if required by operators.
 
 ## 6. Key Decisions Taken
-- Keep v1.9 fully additive and avoid invasive changes to core planner/execution internals.
-- Resolve one-step action requests using deterministic ranking only (no stochastic model dependency).
-- Route action execution through existing reveal/contract pipeline to preserve execution guarantees.
-- Expose structured failure diagnostics instead of silent fallback or implicit retries.
-- Maintain machine-readable output compatibility (`--json`, `--pure-json`) for automation consumers.
+- Preserve v1.x compatibility; all v2 work is additive.
+- Keep deterministic bounded runtime behavior for recovery and planning.
+- Centralize platform concerns in `core/platform` rather than spreading ad-hoc logic.
+- Enforce policy checks before execution at API and action layers.
+- Keep semantic bridge operational without external model dependencies.
 
 ## 7. Multi-Agent Contribution
-- Primary implementation agent: delivered v1.9 action module, API/CLI wiring, tests, build validation, and docs sync.
-- Explore sub-agent: used for architecture reconnaissance and integration point discovery before implementation.
+- Architecture agent (Explore sub-agent): mapped extension points and produced implementation blueprint for v2 platformization.
+- Core implementation agent: implemented platform module, action/API/telemetry/perception/adapter integrations.
+- Debugging agent: resolved compile blockers and rebuilt validated binaries.
+- Documentation agent: synchronized README and required docs (`architecture`, `status`, `parity`, `issues_and_errors`, `context_handoff`, `ai_sdk`, `adapter_sdk`).
+- Refactoring/testing agent: expanded integration hardening assertions for v2 routes and revalidated full suite.

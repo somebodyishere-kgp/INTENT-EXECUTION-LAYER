@@ -105,6 +105,14 @@ struct PerformanceContractSnapshot {
     bool withinBudget{false};
 };
 
+struct LatencyPercentilesSnapshot {
+    std::uint64_t sampleCount{0};
+    double p50Ms{0.0};
+    double p95Ms{0.0};
+    double p99Ms{0.0};
+    double p999Ms{0.0};
+};
+
 struct VisionLatencySample {
     std::uint64_t frameId{0};
     std::uint64_t environmentSequence{0};
@@ -164,6 +172,7 @@ public:
     TelemetryPersistenceStatus PersistenceStatus() const;
     LatencyBreakdownSnapshot LatencySnapshot(std::size_t limit = 200) const;
     PerformanceContractSnapshot PerformanceContract(double targetBudgetMs, std::size_t limit = 200) const;
+    LatencyPercentilesSnapshot LatencyPercentiles(std::size_t limit = 200) const;
     VisionSnapshot VisionLatencySnapshot(std::size_t limit = 200) const;
 
     std::string SerializeSnapshotJson() const;
@@ -171,6 +180,7 @@ public:
     std::string SerializePersistenceJson() const;
     std::string SerializeLatencyJson(std::size_t limit = 200) const;
     std::string SerializePerformanceContractJson(double targetBudgetMs, std::size_t limit = 200) const;
+    std::string SerializeLatencyPercentilesJson(std::size_t limit = 200) const;
     std::string SerializeVisionJson(std::size_t limit = 200) const;
 
 private:

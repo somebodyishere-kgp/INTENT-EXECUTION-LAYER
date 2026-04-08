@@ -5,6 +5,7 @@
 #include <mutex>
 #include <string>
 #include <unordered_map>
+#include <vector>
 
 #include "Adapter.h"
 #include "EventBus.h"
@@ -23,6 +24,7 @@ public:
 
     ExecutionResult Execute(const Intent& intent);
     ExecutionResult ExecuteWithBudget(const Intent& intent, std::chrono::milliseconds latencyBudget);
+    std::vector<AdapterMetadata> ListAdapterMetadata() const;
 
     EventBus& Events() {
         return eventBus_;

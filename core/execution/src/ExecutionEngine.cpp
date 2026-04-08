@@ -48,6 +48,10 @@ ExecutionResult ExecutionEngine::ExecuteWithBudget(const Intent& intent, std::ch
     return ExecuteInternal(intent, timeoutOverrideMs);
 }
 
+std::vector<AdapterMetadata> ExecutionEngine::ListAdapterMetadata() const {
+    return adapters_.ListMetadata();
+}
+
 ExecutionResult ExecutionEngine::ExecuteInternal(const Intent& intent, int timeoutOverrideMs) {
     const std::string traceId = telemetry_.NewTraceId();
 

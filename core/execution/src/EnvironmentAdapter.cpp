@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cctype>
 #include <cmath>
 #include <cstdint>
 #include <functional>
@@ -15,6 +16,32 @@ namespace {
 
 std::size_t HashCombine(std::size_t seed, std::size_t value) {
     return seed ^ (value + static_cast<std::size_t>(0x9e3779b97f4a7c15ULL) + (seed << 6U) + (seed >> 2U));
+}
+
+std::string ToAsciiLower(std::string value) {
+    std::transform(value.begin(), value.end(), value.begin(), [](unsigned char ch) {
+        if (ch >= 'A' && ch <= 'Z') {
+            return static_cast<char>(ch - 'A' + 'a');
+        }
+        return static_cast<char>(ch);
+    });
+    return value;
+}
+
+std::string Narrow(const std::wstring& value) {
+    if (value.empty()) {
+        return "";
+    }
+
+    const int requiredBytes = WideCharToMultiByte(CP_UTF8, 0, value.c_str(), -1, nullptr, 0, nullptr, nullptr);
+    if (requiredBytes <= 1) {
+        return "";
+    }
+
+    std::string result(static_cast<std::size_t>(requiredBytes), '\0');
+    WideCharToMultiByte(CP_UTF8, 0, value.c_str(), -1, result.data(), requiredBytes, nullptr, nullptr);
+    result.pop_back();
+    return result;
 }
 
 std::uint64_t BuildUnifiedSignature(const ScreenState& screenState, const InteractionGraph& interactionGraph) {
@@ -198,9 +225,26 @@ EnvironmentPerception LightweightPerception::Analyze(const EnvironmentState& sta
     std::size_t focusedCount = 0;
     double occupiedArea = 0.0;
     std::size_t signature = static_cast<std::size_t>(0xcbf29ce484222325ULL);
+    std::unordered_map<std::string, std::size_t> groupingByParent;
+    groupingByParent.reserve(state.uiElements.size());
 
     for (const UiElement& element : state.uiElements) {
         ++typeCounts[element.controlType];
+
+        const std::string lowerName = ToAsciiLower(Narrow(element.name));
+        const bool textHeuristic =
+            !lowerName.empty() &&
+            std::any_of(lowerName.begin(), lowerName.end(), [](unsigned char ch) {
+                return std::isalpha(ch) != 0;
+            });
+        if (textHeuristic || element.controlType == UiControlType::TextBox) {
+            ++perception.lightweightTextDetections;
+        }
+
+        const std::string groupKey = element.parentId.empty() ? element.id : element.parentId;
+        if (!groupKey.empty()) {
+            ++groupingByParent[groupKey];
+        }
 
         if (element.isFocused) {
             ++focusedCount;
@@ -238,6 +282,26 @@ EnvironmentPerception LightweightPerception::Analyze(const EnvironmentState& sta
             continue;
         }
         perception.regions.push_back(region);
+
+        std::string label = "sparse";
+        if (region.hasFocus) {
+            label = "focus";
+        } else if (region.elementCount >= 6U) {
+            label = "dense";
+        } else if (region.elementCount >= 3U) {
+            label = "interactive";
+        }
+        perception.regionLabels.push_back(label);
+    }
+
+    for (const auto& group : groupingByParent) {
+        if (group.second > 1U) {
+            ++perception.groupedRegionCount;
+        }
+    }
+
+    if (perception.regionLabels.empty() && !perception.dominantSurface.empty()) {
+        perception.regionLabels.push_back(perception.dominantSurface);
     }
 
     const auto end = std::chrono::steady_clock::now();

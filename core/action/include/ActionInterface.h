@@ -1,6 +1,8 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdint>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -59,6 +61,12 @@ private:
     IntentRegistry& registry_;
 };
 
+struct RecoveryAttempt {
+    int attempt_id{0};
+    std::string strategy;
+    bool success{false};
+};
+
 struct ActionExecutionResult {
     std::string status{"failure"};
     std::string traceId;
@@ -75,9 +83,36 @@ struct ActionExecutionResult {
     std::string executionStatus;
     std::string executionMethod;
     std::string executionMessage;
+    std::int64_t executionDurationMs{0};
 
     bool usedFallback{false};
+    bool recovered{false};
+    std::vector<RecoveryAttempt> recoveryAttempts;
     std::vector<ActionResolutionCandidate> candidates;
+};
+
+class SelfHealingExecutor {
+public:
+    SelfHealingExecutor(IntentRegistry& registry, ExecutionEngine& executionEngine, Telemetry& telemetry);
+
+    ExecutionResult executeWithRecovery(const ExecutionPlan& plan);
+
+    ActionExecutionResult RecoverAction(
+        const ActionRequest& request,
+        const Intent& baseIntent,
+        const std::string& primaryNodeId,
+        const ExecutionPlan& plan,
+        const std::vector<ActionResolutionCandidate>& candidates);
+
+private:
+    std::optional<InteractionNode> ResolveNode(const std::string& nodeId);
+    Intent BuildIntentFromNode(const Intent& templateIntent, const InteractionNode& node) const;
+    ActionExecutionResult BuildFailureResult(const std::string& traceId, const std::vector<RecoveryAttempt>& attempts) const;
+
+    IntentRegistry& registry_;
+    ExecutionEngine& executionEngine_;
+    Telemetry& telemetry_;
+    TargetResolver resolver_;
 };
 
 class ActionExecutor {

@@ -14,6 +14,7 @@
 #include "ExecutionEngine.h"
 #include "InteractionGraph.h"
 #include "IntentRegistry.h"
+#include "PlatformLayer.h"
 #include "Telemetry.h"
 
 namespace iee {
@@ -42,6 +43,7 @@ private:
     std::deque<ScreenState> frameHistory_;
     mutable std::mutex graphHistoryMutex_;
     std::deque<InteractionGraph> graphHistory_;
+    TemporalStateEngine temporalStateEngine_;
 };
 
 }  // namespace iee

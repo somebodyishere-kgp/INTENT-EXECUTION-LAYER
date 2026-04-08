@@ -33,6 +33,9 @@ struct EnvironmentPerception {
     double occupancyRatio{0.0};
     std::uint64_t uiSignature{0};
     std::int64_t computeMs{0};
+    std::size_t lightweightTextDetections{0};
+    std::size_t groupedRegionCount{0};
+    std::vector<std::string> regionLabels;
     std::vector<EnvironmentRegion> regions;
 };
 

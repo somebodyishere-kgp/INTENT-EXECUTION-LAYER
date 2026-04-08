@@ -166,6 +166,15 @@ double PercentileValue(const std::vector<double>& sortedValues, std::size_t perc
     return sortedValues[index];
 }
 
+double PercentileValuePermille(const std::vector<double>& sortedValues, std::size_t permille) {
+    if (sortedValues.empty()) {
+        return 0.0;
+    }
+
+    const std::size_t index = ((sortedValues.size() - 1U) * permille) / 1000U;
+    return sortedValues[index];
+}
+
 }  // namespace
 
 Telemetry::Telemetry()
@@ -539,6 +548,36 @@ PerformanceContractSnapshot Telemetry::PerformanceContract(double targetBudgetMs
     return snapshot;
 }
 
+LatencyPercentilesSnapshot Telemetry::LatencyPercentiles(std::size_t limit) const {
+    LatencyPercentilesSnapshot snapshot;
+
+    std::vector<double> totals;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+
+        const std::size_t cappedLimit = std::max<std::size_t>(1U, limit);
+        const std::size_t start = latencyBreakdowns_.size() > cappedLimit ? latencyBreakdowns_.size() - cappedLimit : 0U;
+        const std::size_t count = latencyBreakdowns_.size() - start;
+
+        snapshot.sampleCount = count;
+        totals.reserve(count);
+        for (std::size_t index = start; index < latencyBreakdowns_.size(); ++index) {
+            totals.push_back(latencyBreakdowns_[index].totalMs);
+        }
+    }
+
+    if (totals.empty()) {
+        return snapshot;
+    }
+
+    std::sort(totals.begin(), totals.end());
+    snapshot.p50Ms = PercentileValue(totals, 50U);
+    snapshot.p95Ms = PercentileValue(totals, 95U);
+    snapshot.p99Ms = PercentileValue(totals, 99U);
+    snapshot.p999Ms = PercentileValuePermille(totals, 999U);
+    return snapshot;
+}
+
 VisionSnapshot Telemetry::VisionLatencySnapshot(std::size_t limit) const {
     VisionSnapshot snapshot;
 
@@ -738,6 +777,20 @@ std::string Telemetry::SerializePerformanceContractJson(double targetBudgetMs, s
     return stream.str();
 }
 
+std::string Telemetry::SerializeLatencyPercentilesJson(std::size_t limit) const {
+    const LatencyPercentilesSnapshot snapshot = LatencyPercentiles(limit);
+
+    std::ostringstream stream;
+    stream << "{";
+    stream << "\"sample_count\":" << snapshot.sampleCount << ",";
+    stream << "\"p50_ms\":" << std::fixed << std::setprecision(3) << snapshot.p50Ms << ",";
+    stream << "\"p95_ms\":" << std::fixed << std::setprecision(3) << snapshot.p95Ms << ",";
+    stream << "\"p99_ms\":" << std::fixed << std::setprecision(3) << snapshot.p99Ms << ",";
+    stream << "\"p999_ms\":" << std::fixed << std::setprecision(3) << snapshot.p999Ms;
+    stream << "}";
+    return stream.str();
+}
+
 std::string Telemetry::SerializeVisionJson(std::size_t limit) const {
     const VisionSnapshot snapshot = VisionLatencySnapshot(limit);
 
@@ -746,7 +799,7 @@ std::string Telemetry::SerializeVisionJson(std::size_t limit) const {
     stream << "\"sample_count\":" << snapshot.sampleCount << ",";
     stream << "\"simulated_samples\":" << snapshot.simulatedSamples << ",";
     stream << "\"dropped_frames\":" << snapshot.droppedFrames << ",";
-    stream << "\"estimated_fps\":" << std::fixed << std::setprecision(3) << snapshot.estimatedFps << ",";
+    stream << "\"estimated_fps\":" << std::fixed << std::setprecision(3) << snapshot.estimatedFps;
 
     const auto appendComponent = [](std::ostringstream* out, const char* name, const VisionComponentStats& stats, bool leadingComma) {
         if (leadingComma) {

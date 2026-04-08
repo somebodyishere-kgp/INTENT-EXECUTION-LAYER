@@ -1,104 +1,134 @@
-# IEE Adapter SDK (v1.1)
+# IEE Adapter SDK (v2.0)
 
 ## 1. Overview
-The Adapter SDK defines how external execution backends integrate with IEE. Adapters are responsible for:
+The Adapter SDK defines how execution backends integrate with IEE. v2.0 keeps v1.x compatibility and adds adapter metadata discovery for ecosystem-level platformization.
+
+Adapters are responsible for:
+
 - capability discovery
 - intent execution
-- baseline scoring signals
+- score and reliability contribution
+- metadata publication
 - optional event subscriptions
 
-The runtime remains deterministic by resolving adapters through score + tie-break rules in `AdapterRegistry`.
+## 2. Adapter Contract
 
-## 2. Adapter Interface Contract
-Adapters implement the C++ interface in `core/execution/include/Adapter.h`.
+Defined in `core/execution/include/Adapter.h`.
 
-Required behavior:
-- `Name()` returns a stable adapter identifier.
-- `GetCapabilities(...)` emits valid intents for current snapshot and graph context.
-- `CanExecute(...)` must be strict and deterministic.
-- `Execute(...)` must return structured `ExecutionResult` and never throw across boundary.
+Required methods:
 
-v1.1 score and subscription hooks:
-- `GetScore()` returns baseline adapter profile:
-  - `reliability` in `[0,1]`
-  - `latency` in milliseconds
-  - `confidence` in `[0,1]`
-- `Subscribe(EventBus&)` may attach adapter-local handlers for reactive behavior.
+- `std::string Name() const`
+- `std::vector<Intent> GetCapabilities(...)`
+- `bool CanExecute(const Intent&) const`
+- `ExecutionResult Execute(const Intent&)`
 
-SDK-style aliases are provided (`name`, `getCapabilities`, `execute`, `getScore`, `subscribe`) for extension ergonomics.
+Optional/extended methods:
 
-## 3. Registration Model
-Register adapters through `AdapterRegistry`.
+- `AdapterScore GetScore() const`
+- `AdapterMetadata GetMetadata() const`
+- `void Subscribe(EventBus&)`
 
-Available APIs:
+SDK aliases remain available (`name`, `getCapabilities`, `execute`, `getScore`, `getMetadata`, `subscribe`).
+
+## 3. v2.0 Metadata Model
+
+New struct:
+
+```cpp
+struct AdapterMetadata {
+    std::string name;
+    std::string version{"1.0"};
+    int priority{100};
+    std::vector<std::string> supportedActions;
+};
+```
+
+Runtime/API usage:
+
+- `AdapterRegistry::ListMetadata()`
+- `ExecutionEngine::ListAdapterMetadata()`
+- `GET /adapters`
+
+Metadata rules:
+
+1. `name` must be stable and deterministic.
+2. `version` should reflect adapter compatibility level.
+3. `priority` is deterministic ranking metadata, not an imperative override.
+4. `supportedActions` should be unique, normalized, and sorted.
+
+## 4. Deterministic Registration and Selection
+
+Registration APIs:
+
+- `Register(std::unique_ptr<Adapter>)`
 - `RegisterAdapter(std::shared_ptr<Adapter>)`
-- `GetAdapters()`
+
+Selection APIs:
+
 - `ResolveBest(const Intent&)`
+- `ResolveBest(const Intent&, AdapterDecision*)`
 
 Determinism rules:
-- only adapters where `CanExecute(intent) == true` are candidates
-- final score is computed from reliability/confidence/latency
-- ties are broken by adapter registration order
 
-## 4. Capability Mapping Rules
-When emitting intents from `GetCapabilities(...)`, adapters must follow these rules:
-1. Every intent must have explicit `action`, `target`, `source`, and bounded confidence.
-2. Use stable IDs for capability-derived intents when possible.
-3. Keep target type aligned with action family:
-   - UI actions (`activate`, `set_value`, `select`) -> `TargetType::UiElement`
-   - filesystem actions (`create`, `delete`, `move`) -> `TargetType::FileSystemPath`
-4. Emit only capabilities that the adapter can actually execute.
-5. Do not emit ambiguous synthetic targets unless adapter can verify them.
+- candidates must satisfy `CanExecute(intent)`
+- score combines reliability/confidence/latency
+- ties break by registration order
+- fast-path cache is bounded and validated by snapshot metadata
 
 ## 5. Execution Contract
+
 `Execute(...)` must:
-1. validate required parameters for the action
-2. attempt operation deterministically
-3. set `status`, `verified`, `method`, `message`, and `duration`
-4. return `FAILED` for invalid/unsupported requests
-5. avoid side effects outside declared target scope
+
+1. validate required inputs
+2. attempt deterministic operation
+3. set full `ExecutionResult` (`status`, `verified`, `method`, `message`, `duration`, `attempts`)
+4. return `FAILED` for unsupported/invalid requests
+5. avoid hidden side effects outside declared intent scope
 
 Status semantics:
-- `SUCCESS`: action executed and verification passed
-- `PARTIAL`: action executed but verification incomplete
-- `FAILED`: action failed or timeout gate exceeded
 
-## 6. Error Handling Rules
-Adapters must fail loudly and structurally.
+- `SUCCESS`: operation and verification succeeded
+- `PARTIAL`: operation succeeded with partial verification
+- `FAILED`: operation/verification failed
 
-Required behavior:
-- always return a meaningful `message` on failure
-- do not swallow execution errors silently
-- avoid throwing uncaught exceptions from adapter boundary
-- set `method` to adapter identity for diagnostics
+## 6. Reliability and Telemetry Integration
 
-Registry/runtime behavior assumes adapter errors are recoverable and may trigger:
-- retry path
-- fallback adapter path
-- telemetry failure log
+Runtime will call `RecordExecution(...)` with adapter outcomes.
 
-## 7. Performance Expectations
-Adapter performance targets for real-time readiness:
-- baseline execution under normal conditions: `< 100ms`
-- capability discovery should avoid expensive full recomputation where possible
-- `CanExecute(...)` should be constant-time or near constant-time
-- event handlers in `Subscribe(...)` must be lightweight and non-blocking
+Adapter runtime metrics update:
 
-Scoring implications:
-- lower average latency improves adapter selection
-- persistent failures reduce runtime reliability
-- stale metrics decay over time, so sustained performance matters
+- reliability EMA
+- latency EMA
+- confidence
+- success/failure counters
+
+These signals feed deterministic adapter selection and telemetry reporting.
+
+## 7. Error Handling Requirements
+
+Adapters should fail structurally and never silently:
+
+- always set meaningful failure `message`
+- set `method` to adapter identity
+- avoid uncaught exceptions at boundary
+- preserve deterministic behavior for identical inputs
 
 ## 8. Integration Checklist
-Before shipping a new adapter:
-1. implement all required adapter methods
-2. return stable `Name()` and non-zero baseline `GetScore()`
-3. ensure `CanExecute` is strict and deterministic
-4. add unit tests for execute success/failure paths
-5. verify behavior through `iee telemetry` and `iee trace`
-6. validate API `POST /execute` and `POST /explain` flows against emitted capabilities
+
+Before shipping an adapter:
+
+1. Implement required contract methods.
+2. Provide stable `Name()` and realistic `GetScore()`.
+3. Provide deterministic `GetMetadata()`.
+4. Validate strict `CanExecute(...)` gating.
+5. Add unit/integration tests for success and failure paths.
+6. Validate API behavior through:
+   - `POST /execute`
+   - `POST /explain`
+   - `GET /adapters`
 
 ## 9. Compatibility Notes
-- v1 adapters remain compatible; v1.1 score/subscription hooks have defaults.
-- new adapters should provide explicit `GetScore()` for reliable selection behavior.
-- adapter SDK is intentionally dependency-light: C++20 + existing IEE module contracts.
+
+- v1.x adapters remain compatible; metadata defaults are provided.
+- No external dependency is required beyond C++20 and existing IEE contracts.
+- v2.0 metadata is additive and does not break existing adapter code.

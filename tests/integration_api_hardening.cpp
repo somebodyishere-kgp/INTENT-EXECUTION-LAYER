@@ -1,3 +1,4 @@
+#include <chrono>
 #include <filesystem>
 #include <cstdint>
 #include <iostream>
@@ -78,12 +79,29 @@ public:
         return {intent};
     }
 
-    bool CanExecute(const iee::Intent&) const override {
-        return false;
+    bool CanExecute(const iee::Intent& intent) const override {
+        return intent.target.type == iee::TargetType::UiElement &&
+            (intent.action == iee::IntentAction::Activate ||
+                intent.action == iee::IntentAction::Select ||
+                intent.action == iee::IntentAction::SetValue);
     }
 
-    iee::ExecutionResult Execute(const iee::Intent&) override {
-        return {};
+    iee::ExecutionResult Execute(const iee::Intent& intent) override {
+        iee::ExecutionResult result;
+        result.method = "uia-fake";
+        result.duration = std::chrono::milliseconds(1);
+
+        if (intent.action == iee::IntentAction::SetValue && intent.params.Get("value").empty()) {
+            result.status = iee::ExecutionStatus::FAILED;
+            result.verified = false;
+            result.message = "value required";
+            return result;
+        }
+
+        result.status = iee::ExecutionStatus::SUCCESS;
+        result.verified = true;
+        result.message = "ok";
+        return result;
     }
 };
 
@@ -219,6 +237,99 @@ int main() {
         }
 
         {
+            const std::string response = api.HandleRequestForTesting(BuildHttpRequest("GET", "/policy"));
+            AssertTrue(HasStatus(response, 200), "GET /policy should return 200");
+            AssertTrue(response.find("\"allow_execute\":true") != std::string::npos, "Policy should default to allow execute");
+        }
+
+        {
+            const std::string response = api.HandleRequestForTesting(BuildHttpRequest("GET", "/adapters"));
+            AssertTrue(HasStatus(response, 200), "GET /adapters should return 200");
+            AssertTrue(response.find("\"adapters\"") != std::string::npos, "Adapters response should include adapter list");
+            AssertTrue(response.find("\"supported_actions\"") != std::string::npos, "Adapters response should include supported_actions");
+        }
+
+        {
+            const std::string response = api.HandleRequestForTesting(BuildHttpRequest("POST", "/policy", "{\"allow_execute\":\"false\"}"));
+            AssertTrue(HasStatus(response, 200), "POST /policy should return 200");
+            AssertTrue(response.find("\"allow_execute\":false") != std::string::npos, "POST /policy should update allow_execute");
+        }
+
+        {
+            const std::string body = "{\"action\":\"activate\",\"target\":\"Save\"}";
+            const std::string response = api.HandleRequestForTesting(BuildHttpRequest("POST", "/act", body));
+            AssertTrue(HasStatus(response, 403), "POST /act should return 403 when policy blocks execution");
+            AssertTrue(response.find("\"reason\":\"policy_denied\"") != std::string::npos, "Policy denied action should include policy_denied reason");
+        }
+
+        {
+            const std::string response = api.HandleRequestForTesting(BuildHttpRequest("POST", "/policy", "{\"allow_execute\":\"true\"}"));
+            AssertTrue(HasStatus(response, 200), "POST /policy should re-enable execution");
+            AssertTrue(response.find("\"allow_execute\":true") != std::string::npos, "Policy should report allow_execute=true after reset");
+        }
+
+        {
+            const std::string body = "{\"action\":\"activate\",\"target\":\"Save\",\"context\":{\"app\":\"code\"}}";
+            const std::string response = api.HandleRequestForTesting(BuildHttpRequest("POST", "/act", body));
+            AssertTrue(HasStatus(response, 200), "POST /act should return 200 for visible deterministic action");
+            AssertTrue(response.find("\"status\":\"success\"") != std::string::npos, "POST /act should succeed for Save target");
+        }
+
+        {
+            const std::string body =
+                "{\"steps\":[{\"action\":\"activate\",\"target\":\"Save\"},{\"action\":\"activate\",\"target\":\"Save\"}]}";
+            const std::string response = api.HandleRequestForTesting(BuildHttpRequest("POST", "/act/sequence", body));
+            AssertTrue(HasStatus(response, 200), "POST /act/sequence should return 200 for deterministic two-step sequence");
+            AssertTrue(response.find("\"status\":\"success\"") != std::string::npos, "POST /act/sequence should report success");
+            AssertTrue(response.find("\"completed_steps\":2") != std::string::npos, "POST /act/sequence should complete both steps");
+        }
+
+        {
+            const std::string body =
+                "{\"steps\":[{\"action\":\"activate\",\"target\":\"Save\"}]}";
+            const std::string response = api.HandleRequestForTesting(BuildHttpRequest("POST", "/workflow/run", body));
+            AssertTrue(HasStatus(response, 200), "POST /workflow/run should return 200");
+            AssertTrue(response.find("\"status\":\"success\"") != std::string::npos, "POST /workflow/run should report success");
+        }
+
+        {
+            const std::string body =
+                "{\"goal\":\"click Save then click Save\",\"context\":{\"domain\":\"generic\"}}";
+            const std::string response = api.HandleRequestForTesting(BuildHttpRequest("POST", "/task/semantic", body));
+            AssertTrue(HasStatus(response, 200), "POST /task/semantic should return 200");
+            AssertTrue(response.find("\"semantic\"") != std::string::npos, "Semantic task response should include semantic plan");
+            AssertTrue(response.find("\"mode\":\"intent_sequence\"") != std::string::npos, "Semantic planner should generate intent_sequence for chained goal");
+        }
+
+        {
+            const std::string body = "{\"action\":\"activate\",\"target\":\"Save\"}";
+            const std::string response = api.HandleRequestForTesting(BuildHttpRequest("POST", "/ucp/act", body));
+            AssertTrue(HasStatus(response, 200), "POST /ucp/act should return 200");
+            AssertTrue(response.find("\"ucp_version\":\"1.0\"") != std::string::npos, "UCP act envelope should include version");
+            AssertTrue(response.find("\"operation\":\"act\"") != std::string::npos, "UCP act envelope should include operation=act");
+        }
+
+        {
+            const std::string response = api.HandleRequestForTesting(BuildHttpRequest("GET", "/ucp/state"));
+            AssertTrue(HasStatus(response, 200), "GET /ucp/state should return 200");
+            AssertTrue(response.find("\"ucp_version\":\"1.0\"") != std::string::npos, "UCP state envelope should include version");
+            AssertTrue(response.find("\"operation\":\"state\"") != std::string::npos, "UCP state envelope should include operation=state");
+        }
+
+        {
+            const std::string response = api.HandleRequestForTesting(BuildHttpRequest("GET", "/execution/memory?limit=32"));
+            AssertTrue(HasStatus(response, 200), "GET /execution/memory should return 200");
+            AssertTrue(response.find("\"nodes\"") != std::string::npos, "Execution memory response should include nodes array");
+        }
+
+        {
+            const std::string response = api.HandleRequestForTesting(BuildHttpRequest("GET", "/state/history?limit=32"));
+            AssertTrue(HasStatus(response, 200), "GET /state/history should return 200");
+            AssertTrue(response.find("\"history\"") != std::string::npos, "State history response should include history");
+            AssertTrue(response.find("\"frame_consistency\"") != std::string::npos, "State history response should include frame consistency");
+        }
+
+        {
             const std::string response = api.HandleRequestForTesting(BuildHttpRequest("GET", "/stream/frame"));
             AssertTrue(HasStatus(response, 200), "GET /stream/frame should return 200");
             AssertTrue(response.find("\"mode\":\"full\"") != std::string::npos, "Stream frame response should default to full mode");
@@ -251,6 +362,19 @@ int main() {
             const std::string response = api.HandleRequestForTesting(BuildHttpRequest("GET", "/perf?target_ms=10&limit=64"));
             AssertTrue(HasStatus(response, 200), "GET /perf should return 200");
             AssertTrue(response.find("\"contract\"") != std::string::npos, "Perf response should include contract object");
+        }
+
+        {
+            const std::string response = api.HandleRequestForTesting(BuildHttpRequest("GET", "/perf/percentiles?limit=64"));
+            AssertTrue(HasStatus(response, 200), "GET /perf/percentiles should return 200");
+            AssertTrue(response.find("\"p99_ms\"") != std::string::npos, "Perf percentiles response should include p99");
+            AssertTrue(response.find("\"p999_ms\"") != std::string::npos, "Perf percentiles response should include p999");
+        }
+
+        {
+            const std::string response = api.HandleRequestForTesting(BuildHttpRequest("GET", "/perf/frame-consistency?limit=64"));
+            AssertTrue(HasStatus(response, 200), "GET /perf/frame-consistency should return 200");
+            AssertTrue(response.find("\"coherency_score\"") != std::string::npos, "Frame consistency response should include coherency score");
         }
 
         {
