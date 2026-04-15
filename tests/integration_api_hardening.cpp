@@ -537,6 +537,44 @@ int main() {
         }
 
         {
+            const std::string response = api.HandleRequestForTesting(
+                BuildHttpRequest("POST", "/ure/start", "{\"execute\":\"false\",\"priority\":\"auto\"}"));
+            AssertTrue(HasStatus(response, 200), "POST /ure/start should return 200");
+            AssertTrue(response.find("\"status\"") != std::string::npos, "URE start response should include status payload");
+        }
+
+        {
+            const std::string response = api.HandleRequestForTesting(BuildHttpRequest("GET", "/ure/status"));
+            AssertTrue(HasStatus(response, 200), "GET /ure/status should return 200");
+            AssertTrue(response.find("\"active\":true") != std::string::npos, "URE status should report active runtime");
+        }
+
+        {
+            const std::string response = api.HandleRequestForTesting(
+                BuildHttpRequest("POST", "/ure/goal", "{\"goal\":\"click save\",\"target\":\"Save\",\"preferred_actions\":\"activate\"}"));
+            AssertTrue(HasStatus(response, 200), "POST /ure/goal should return 200");
+            AssertTrue(response.find("\"goal_version\"") != std::string::npos, "URE goal response should include goal_version");
+        }
+
+        {
+            const std::string response = api.HandleRequestForTesting(BuildHttpRequest("GET", "/ure/goal"));
+            AssertTrue(HasStatus(response, 200), "GET /ure/goal should return 200");
+            AssertTrue(response.find("\"goal\":\"click save\"") != std::string::npos, "URE goal should persist configured goal");
+        }
+
+        {
+            const std::string response = api.HandleRequestForTesting(BuildHttpRequest("GET", "/telemetry/reflex"));
+            AssertTrue(HasStatus(response, 200), "GET /telemetry/reflex should return 200");
+            AssertTrue(response.find("\"sample_count\"") != std::string::npos, "Reflex telemetry response should include sample_count");
+        }
+
+        {
+            const std::string response = api.HandleRequestForTesting(BuildHttpRequest("POST", "/ure/stop", "{}"));
+            AssertTrue(HasStatus(response, 200), "POST /ure/stop should return 200");
+            AssertTrue(response.find("\"stopped\":true") != std::string::npos, "URE stop should acknowledge stopped=true");
+        }
+
+        {
             const std::string body = "{\"action\":\"activate\",\"target\":\"Save\",\"mode\":\"queued\",\"priority\":\"high\"}";
             const std::string response = api.HandleRequestForTesting(BuildHttpRequest("POST", "/execute", body));
             AssertTrue(HasStatus(response, 202), "Queued execute should return 202");

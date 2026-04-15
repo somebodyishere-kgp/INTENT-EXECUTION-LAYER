@@ -327,6 +327,15 @@ void Telemetry::LogVisionSample(const VisionLatencySample& sample) {
     }
 }
 
+void Telemetry::LogReflexSample(const ReflexTelemetrySample& sample) {
+    std::lock_guard<std::mutex> lock(mutex_);
+
+    reflexSamples_.push_back(sample);
+    if (reflexSamples_.size() > kMaxReflexSamples) {
+        reflexSamples_.pop_front();
+    }
+}
+
 std::vector<ExecutionTrace> Telemetry::RecentExecutions(std::size_t limit) const {
     std::lock_guard<std::mutex> lock(mutex_);
 
@@ -388,6 +397,7 @@ std::optional<ExecutionTrace> Telemetry::FindTrace(const std::string& traceId) c
 
 TelemetrySnapshot Telemetry::Snapshot() const {
     TelemetrySnapshot snapshot;
+    ReflexTelemetrySnapshot reflex;
     {
         std::lock_guard<std::mutex> lock(mutex_);
 
@@ -440,6 +450,16 @@ TelemetrySnapshot Telemetry::Snapshot() const {
         [](const AdapterTelemetryMetrics& left, const AdapterTelemetryMetrics& right) {
             return left.adapter < right.adapter;
         });
+
+        reflex = ReflexSnapshot(256U);
+        snapshot.reflexSamples = reflex.sampleCount;
+        snapshot.reflexIntentsProduced = reflex.intentsProduced;
+        snapshot.reflexAverageDecisionMs = reflex.averageDecisionMs;
+        snapshot.reflexP95DecisionMs = reflex.p95DecisionMs;
+        snapshot.reflexAverageLoopMs = reflex.averageLoopMs;
+        snapshot.reflexOverBudgetCount = reflex.overBudgetCount;
+        snapshot.reflexExploratoryCount = reflex.exploratoryCount;
+        snapshot.reflexGoalConditionedCount = reflex.goalConditionedCount;
 
     return snapshot;
 }
@@ -643,6 +663,70 @@ VisionSnapshot Telemetry::VisionLatencySnapshot(std::size_t limit) const {
     return snapshot;
 }
 
+ReflexTelemetrySnapshot Telemetry::ReflexSnapshot(std::size_t limit) const {
+    ReflexTelemetrySnapshot snapshot;
+
+    std::vector<double> decisionValues;
+    std::vector<double> loopValues;
+
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+
+        const std::size_t cappedLimit = std::max<std::size_t>(1U, limit);
+        const std::size_t start = reflexSamples_.size() > cappedLimit ? reflexSamples_.size() - cappedLimit : 0U;
+        const std::size_t count = reflexSamples_.size() - start;
+
+        snapshot.sampleCount = count;
+        decisionValues.reserve(count);
+        loopValues.reserve(count);
+
+        for (std::size_t index = start; index < reflexSamples_.size(); ++index) {
+            const ReflexTelemetrySample& sample = reflexSamples_[index];
+            decisionValues.push_back(static_cast<double>(sample.decisionTimeUs) / 1000.0);
+            loopValues.push_back(static_cast<double>(sample.loopTimeUs) / 1000.0);
+
+            if (!sample.decisionWithinBudget) {
+                ++snapshot.overBudgetCount;
+            }
+            if (sample.exploratory) {
+                ++snapshot.exploratoryCount;
+            }
+            if (sample.intentProduced) {
+                ++snapshot.intentsProduced;
+            }
+            if (sample.goalConditioned) {
+                ++snapshot.goalConditionedCount;
+            }
+        }
+
+        if (!reflexSamples_.empty()) {
+            snapshot.latest = reflexSamples_.back();
+        }
+    }
+
+    if (!decisionValues.empty()) {
+        double decisionSum = 0.0;
+        for (double value : decisionValues) {
+            decisionSum += value;
+        }
+        snapshot.averageDecisionMs = decisionSum / static_cast<double>(decisionValues.size());
+
+        std::sort(decisionValues.begin(), decisionValues.end());
+        const std::size_t index = ((decisionValues.size() - 1U) * 95U) / 100U;
+        snapshot.p95DecisionMs = decisionValues[index];
+    }
+
+    if (!loopValues.empty()) {
+        double loopSum = 0.0;
+        for (double value : loopValues) {
+            loopSum += value;
+        }
+        snapshot.averageLoopMs = loopSum / static_cast<double>(loopValues.size());
+    }
+
+    return snapshot;
+}
+
 std::string Telemetry::SerializeSnapshotJson() const {
     const TelemetrySnapshot snapshot = Snapshot();
 
@@ -660,6 +744,16 @@ std::string Telemetry::SerializeSnapshotJson() const {
     stream << "\"traceBufferSize\":" << snapshot.traceBufferSize << ",";
     stream << "\"traceBufferWrapped\":" << (snapshot.traceBufferWrapped ? "true" : "false") << ",";
     stream << "\"rotationFileIndex\":" << snapshot.rotationFileIndex << ",";
+    stream << "\"reflex\":{";
+    stream << "\"samples\":" << snapshot.reflexSamples << ",";
+    stream << "\"intentsProduced\":" << snapshot.reflexIntentsProduced << ",";
+    stream << "\"averageDecisionMs\":" << std::fixed << std::setprecision(3) << snapshot.reflexAverageDecisionMs << ",";
+    stream << "\"p95DecisionMs\":" << std::fixed << std::setprecision(3) << snapshot.reflexP95DecisionMs << ",";
+    stream << "\"averageLoopMs\":" << std::fixed << std::setprecision(3) << snapshot.reflexAverageLoopMs << ",";
+    stream << "\"overBudgetCount\":" << snapshot.reflexOverBudgetCount << ",";
+    stream << "\"exploratoryCount\":" << snapshot.reflexExploratoryCount << ",";
+    stream << "\"goalConditionedCount\":" << snapshot.reflexGoalConditionedCount;
+    stream << "},";
     stream << "\"adapters\":[";
 
     for (std::size_t index = 0; index < snapshot.adapterMetrics.size(); ++index) {
@@ -827,6 +921,41 @@ std::string Telemetry::SerializeVisionJson(std::size_t limit) const {
         stream << "\"merge_ms\":" << std::fixed << std::setprecision(3) << latest.mergeMs << ",";
         stream << "\"total_ms\":" << std::fixed << std::setprecision(3) << latest.totalMs << ",";
         stream << "\"simulated\":" << (latest.simulated ? "true" : "false") << ",";
+        stream << "\"timestamp_ms\":" << EpochMs(latest.timestamp);
+        stream << "}";
+    }
+
+    stream << "}";
+    return stream.str();
+}
+
+std::string Telemetry::SerializeReflexJson(std::size_t limit) const {
+    const ReflexTelemetrySnapshot snapshot = ReflexSnapshot(limit);
+
+    std::ostringstream stream;
+    stream << "{";
+    stream << "\"sample_count\":" << snapshot.sampleCount << ",";
+    stream << "\"intents_produced\":" << snapshot.intentsProduced << ",";
+    stream << "\"average_decision_ms\":" << std::fixed << std::setprecision(3) << snapshot.averageDecisionMs << ",";
+    stream << "\"p95_decision_ms\":" << std::fixed << std::setprecision(3) << snapshot.p95DecisionMs << ",";
+    stream << "\"average_loop_ms\":" << std::fixed << std::setprecision(3) << snapshot.averageLoopMs << ",";
+    stream << "\"over_budget_count\":" << snapshot.overBudgetCount << ",";
+    stream << "\"exploratory_count\":" << snapshot.exploratoryCount << ",";
+    stream << "\"goal_conditioned_count\":" << snapshot.goalConditionedCount;
+
+    if (snapshot.latest.has_value()) {
+        const ReflexTelemetrySample& latest = *snapshot.latest;
+        stream << ",\"latest\":{";
+        stream << "\"frame\":" << latest.frame << ",";
+        stream << "\"decision_time_us\":" << latest.decisionTimeUs << ",";
+        stream << "\"loop_time_us\":" << latest.loopTimeUs << ",";
+        stream << "\"priority\":" << latest.priority << ",";
+        stream << "\"decision_within_budget\":" << (latest.decisionWithinBudget ? "true" : "false") << ",";
+        stream << "\"exploratory\":" << (latest.exploratory ? "true" : "false") << ",";
+        stream << "\"executable\":" << (latest.executable ? "true" : "false") << ",";
+        stream << "\"intent_produced\":" << (latest.intentProduced ? "true" : "false") << ",";
+        stream << "\"goal_conditioned\":" << (latest.goalConditioned ? "true" : "false") << ",";
+        stream << "\"reason\":\"" << EscapeJson(latest.reason) << "\",";
         stream << "\"timestamp_ms\":" << EpochMs(latest.timestamp);
         stream << "}";
     }

@@ -1,11 +1,11 @@
-# IEE v3.0 Architecture
+# IEE v3.1 Architecture
 
 ## Purpose
-IEE v3.0 introduces the Universal Reflex Engine (URE): a deterministic, domain-agnostic reflex intelligence layer that can infer action opportunities from unseen environments without per-step LLM calls.
+IEE v3.1 extends the Universal Reflex Engine (URE) from API-step mode into a continuous control-runtime intelligence loop.
 
 The architecture remains additive over v2.x and preserves existing execution contracts.
 
-## URE Pipeline
+## URE Continuous Pipeline
 
 ```text
 EnvironmentState (ScreenState + UIG)
@@ -25,9 +25,16 @@ MetaPolicyEngine
         v
 UniversalReflexAgent
         |
+        +--> UreDecisionProvider (continuous)
+        |       |
+        |       +--> Intent(priority_hint) -> ControlRuntime queue
+        |       +--> ReflexTelemetrySample -> Telemetry
+        |
         +--> ExplorationEngine
         +--> ExperienceMemory
-        +--> Optional /act execution
+        +--> Optional /act execution (/ure/step)
+        |
+        +--> ExecutionObserver feedback -> RecordExecutionOutcome
 ```
 
 ## New Core Module
@@ -45,7 +52,17 @@ The module includes the following primitives:
 - `PolicyRule`
 - `ExplorationResult`
 - `ExperienceEntry`
+- `ReflexGoal`
 - `UniversalReflexAgent`
+
+## Control Runtime Integration
+
+v3.1 introduces a continuous URE runtime layer inside control execution:
+
+- `UreDecisionProvider` drives deterministic reflex decisions in control decision passes.
+- Control queue priority hints (`control_priority`) are generated from reflex priority and goal context.
+- Runtime execution observer updates reflex adaptation state from actual execution outcomes.
+- Integration remains non-blocking: actions are enqueued and executed through existing runtime pipeline.
 
 ## Integration Points
 
@@ -56,6 +73,7 @@ The module includes the following primitives:
 ### Action integration
 - Reflex decisions can be executed through existing `ActionExecutor` (`POST /act` contract path).
 - Reveal/verification behavior remains enforced by existing action and execution contracts.
+- Continuous reflex uses control runtime enqueue/execute path and preserves adapter verification contracts.
 
 ### Policy integration
 - URE execution and exploration are gated by `PermissionPolicyStore`.
@@ -69,8 +87,29 @@ Added routes in API server:
 - `GET /ure/decision`
 - `GET /ure/metrics`
 - `GET /ure/experience`
+- `GET /ure/status`
+- `GET /ure/goal`
+- `GET /telemetry/reflex`
 - `POST /ure/step`
 - `POST /ure/demo`
+- `POST /ure/start`
+- `POST /ure/stop`
+- `POST /ure/goal`
+
+### CLI integration
+
+- `iee ure live`
+- `iee ure debug`
+- `iee ure demo realtime`
+
+## Goal-Conditioned Reflex
+
+`ReflexGoal` enables deterministic goal conditioning without LLM calls:
+
+- goal text, target hint, domain, preferred action list
+- active/inactive switching
+- versioned runtime updates through `/ure/goal`
+- policy scoring bias when world objects match goal tokens
 
 ## Design Rules Enforced
 
@@ -79,10 +118,11 @@ Added routes in API server:
 - Deterministic sorting/tie-break behavior.
 - Bounded relationship generation and exploration.
 - Backward-compatible additive integration with v2 routes.
+- Continuous path remains non-blocking and bounded per decision pass.
 
 ## Performance Model
 
-URE captures the following timing signals per step:
+URE captures timing in both step-mode and continuous-mode:
 
 - decision time (microseconds)
 - total loop time (microseconds)
@@ -95,6 +135,14 @@ Aggregated metrics:
 - average loop latency
 - over-budget decision count
 - exploratory decision count
+- goal-conditioned decision count
+- intents produced in continuous mode
+
+Merged telemetry surfaces:
+
+- `TelemetrySnapshot.reflex`
+- `GET /telemetry/reflex`
+- `GET /ure/metrics` runtime + telemetry envelope
 
 ## Safety Model
 
@@ -104,10 +152,11 @@ Reflex execution model is safety constrained:
 2. Check policy (`allow_execute`) before action execution.
 3. Use bounded exploration only when execution-safe.
 4. Record outcomes and bias against repeated failures.
+5. Continuous runtime can be stopped independently via `/ure/stop` without tearing down control runtime.
 
 ## Validation Baseline
 
 - Build: `cmake --build build --config Release`
 - Test: `ctest --test-dir build -C Release --output-on-failure`
 
-Current baseline includes a dedicated URE integration test.
+Current baseline includes URE runtime endpoint checks in integration hardening and universal reflex tests.

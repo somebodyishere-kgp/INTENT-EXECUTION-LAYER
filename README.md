@@ -21,8 +21,45 @@ This repository includes:
 
 - IEE v1.x to v2.x foundations (observer, capability graph, interaction graph, action interface, policy, workflows)
 - IEE v3.0 (Phase 13.5): Universal Reflex Engine (URE)
+- IEE v3.1 (Phase 14): continuous URE integration into the control runtime loop
 
-## IEE v3.0 Highlights (Universal Reflex Engine)
+## IEE v3.1 Highlights (Continuous URE Runtime)
+
+1. Continuous real-time reflex loop
+- Added a continuous URE decision provider integrated with `ControlRuntime`.
+- URE now evaluates synchronized environment frames continuously while runtime is active.
+
+2. Runtime control endpoints
+- Added continuous URE control routes:
+        - `POST /ure/start`
+        - `POST /ure/stop`
+        - `GET /ure/status`
+        - `POST /ure/goal`
+        - `GET /ure/goal`
+
+3. Goal-conditioned reflex behavior
+- Added `ReflexGoal` model and goal-aware policy decisioning.
+- Reflex priority and chosen actions can be conditioned by active goal + preferred actions.
+
+4. Priority-aware non-blocking action pipeline
+- Added queue-priority hints from URE decision provider into control runtime intent scheduling.
+- Reflex actions are still executed through existing execution contracts and policy gates.
+
+5. Real-time feedback adaptation
+- Added runtime execution observer callback integration.
+- Reflex experience memory is updated from actual action outcomes in continuous mode.
+
+6. Telemetry merge
+- Added reflex telemetry stream and merged reflex summary into main telemetry snapshot.
+- Added `GET /telemetry/reflex` route.
+
+7. CLI runtime control
+- Added CLI command group:
+        - `iee ure live`
+        - `iee ure debug`
+        - `iee ure demo realtime`
+
+## IEE v3.0 Highlights (Universal Reflex Engine Base)
 
 1. Universal feature extraction
 - Added structural feature extraction from UIG, ScreenState, and cursor motion.
@@ -84,13 +121,18 @@ AffordanceEngine
 MetaPolicyEngine
         |
         v
-UniversalReflexAgent
+UniversalReflexAgent + UreDecisionProvider
         |
-        +--> (optional execute) ActionExecutor -> /act contract
+        +--> ControlRuntime queue (priority-aware)
+        |       |
+        |       +--> ExecutionEngine -> Action adapters
+        |       +--> Execution observer -> Reflex outcome update
+        |
+        +--> (optional step execute) ActionExecutor -> /act contract
         |
         +--> ExplorationEngine + ExperienceMemory
         |
-        +--> Reflex metrics + API surfaces
+        +--> Reflex telemetry + API surfaces
 ```
 
 ## Repository Structure
@@ -139,6 +181,11 @@ ctest --test-dir build -C Release --output-on-failure
 
 # run local API
 ./build/Release/iee.exe api --port 8787
+
+# continuous URE runtime
+./build/Release/iee.exe ure live --samples 20 --interval_ms 120
+./build/Release/iee.exe ure debug --json
+./build/Release/iee.exe ure demo realtime --goal "stabilize active interaction target"
 ```
 
 ## API Quickstart
@@ -166,8 +213,14 @@ Key routes:
 - `GET /ure/decision`
 - `GET /ure/metrics`
 - `GET /ure/experience`
+- `GET /ure/status`
+- `GET /ure/goal`
+- `GET /telemetry/reflex`
 - `POST /ure/step`
 - `POST /ure/demo`
+- `POST /ure/start`
+- `POST /ure/stop`
+- `POST /ure/goal`
 
 ## URE Example Request
 
@@ -192,6 +245,7 @@ Primary docs:
 - [docs/universal_reflex_engine.md](docs/universal_reflex_engine.md)
 - [docs/affordance_model.md](docs/affordance_model.md)
 - [docs/world_model_spec.md](docs/world_model_spec.md)
+- [docs/reflex_runtime.md](docs/reflex_runtime.md)
 
 ## License
 

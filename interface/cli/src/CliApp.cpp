@@ -13,6 +13,7 @@
 #include <map>
 #include <sstream>
 #include <string>
+#include <thread>
 #include <system_error>
 
 #include "ActionInterface.h"
@@ -310,6 +311,52 @@ std::string ResolveNodeIdArgument(const ParsedCommand& command) {
     return nodeId;
 }
 
+std::string BuildHttpRequest(const std::string& method, const std::string& path, const std::string& body = "") {
+    std::ostringstream stream;
+    stream << method << " " << path << " HTTP/1.1\r\n";
+    stream << "Host: 127.0.0.1\r\n";
+    stream << "Content-Type: application/json\r\n";
+    stream << "Content-Length: " << body.size() << "\r\n\r\n";
+    stream << body;
+    return stream.str();
+}
+
+int ParseHttpStatus(const std::string& response) {
+    const std::string marker = "HTTP/1.1 ";
+    const std::size_t pos = response.find(marker);
+    if (pos == std::string::npos || pos + marker.size() + 3U > response.size()) {
+        return 0;
+    }
+
+    int status = 0;
+    const std::string statusText = response.substr(pos + marker.size(), 3U);
+    const auto [ptr, error] = std::from_chars(statusText.data(), statusText.data() + statusText.size(), status);
+    if (error != std::errc() || ptr != statusText.data() + statusText.size()) {
+        return 0;
+    }
+    return status;
+}
+
+std::string ExtractHttpBody(const std::string& response) {
+    const std::size_t bodyPos = response.find("\r\n\r\n");
+    return bodyPos == std::string::npos ? std::string() : response.substr(bodyPos + 4U);
+}
+
+bool IsTruthyString(const std::string& value, bool defaultValue) {
+    if (value.empty()) {
+        return defaultValue;
+    }
+
+    const std::string normalized = ToAsciiLower(value);
+    if (normalized == "1" || normalized == "true" || normalized == "yes" || normalized == "on") {
+        return true;
+    }
+    if (normalized == "0" || normalized == "false" || normalized == "no" || normalized == "off") {
+        return false;
+    }
+    return defaultValue;
+}
+
 }  // namespace
 
 CliApp::CliApp(IntentRegistry& intentRegistry, ExecutionEngine& executionEngine, Telemetry& telemetry)
@@ -404,6 +451,10 @@ int CliApp::Run(int argc, char* argv[]) {
 
     if (command.command == "vision") {
         return HandleVision(command);
+    }
+
+    if (command.command == "ure") {
+        return HandleUre(command);
     }
 
     if (command.command == "demo") {
@@ -1338,7 +1389,7 @@ int CliApp::HandleApi(const ParsedCommand& command) {
     std::cout << "Routes: GET /health, GET /intents, GET /capabilities, GET /control/status, "
                  "GET /capabilities/full, GET /interaction-graph, GET /interaction-node/{id}, "
                  "GET /telemetry/persistence, GET /trace/{trace_id}, GET /stream/state, GET /state/ai, GET /stream/frame, GET /stream/live, GET /perf, "
-                 "POST /execute, POST /act, POST /task/plan, POST /predict, POST /explain, POST /control/start, POST /control/stop, "
+                 "GET /ure/status, GET /ure/goal, POST /execute, POST /act, POST /task/plan, POST /predict, POST /explain, POST /control/start, POST /control/stop, POST /ure/start, POST /ure/stop, POST /ure/goal, "
                  "POST /stream/control\n";
     std::cout << "Graph delta query: GET /interaction-graph?delta_since=<version>\n";
     if (singleRequest) {
@@ -1637,6 +1688,166 @@ int CliApp::HandleVision(const ParsedCommand& command) {
     }
 
     return 0;
+}
+
+int CliApp::HandleUre(const ParsedCommand& command) {
+    const bool jsonMode = WantsJson(command);
+    if (command.positionals.empty()) {
+        if (jsonMode) {
+            std::cout << "{\"error\":{\"code\":\"missing_ure_subcommand\",\"message\":\"Usage: iee ure live|debug|demo realtime\"}}\n";
+        } else {
+            std::cerr << "Usage: iee ure live|debug|demo realtime\n";
+        }
+        return 1;
+    }
+
+    const std::string subcommand = ToAsciiLower(command.positionals[0]);
+    const bool demoRealtime = subcommand == "demo" && command.positionals.size() > 1U &&
+        ToAsciiLower(command.positionals[1]) == "realtime";
+
+    if (subcommand != "live" && subcommand != "debug" && !demoRealtime) {
+        if (jsonMode) {
+            std::cout << "{\"error\":{\"code\":\"invalid_ure_subcommand\",\"message\":\"Usage: iee ure live|debug|demo realtime\"}}\n";
+        } else {
+            std::cerr << "Usage: iee ure live|debug|demo realtime\n";
+        }
+        return 1;
+    }
+
+    IntentApiServer api(intentRegistry_, executionEngine_, telemetry_);
+    const auto request = [&api](const std::string& method, const std::string& path, const std::string& payload) {
+        const std::string response = api.HandleRequestForTesting(BuildHttpRequest(method, path, payload));
+        return std::make_pair(ParseHttpStatus(response), ExtractHttpBody(response));
+    };
+
+    if (subcommand == "debug") {
+        const auto [statusCode, statusBody] = request("GET", "/ure/status", "");
+        const auto [metricsCode, metricsBody] = request("GET", "/ure/metrics", "");
+
+        if (jsonMode) {
+            std::cout << "{";
+            std::cout << "\"status_code\":" << statusCode << ",";
+            std::cout << "\"status\":" << (statusBody.empty() ? "{}" : statusBody) << ",";
+            std::cout << "\"metrics_code\":" << metricsCode << ",";
+            std::cout << "\"metrics\":" << (metricsBody.empty() ? "{}" : metricsBody);
+            std::cout << "}\n";
+        } else {
+            std::cout << "URE status (" << statusCode << ")\n";
+            std::cout << statusBody << "\n\n";
+            std::cout << "URE metrics (" << metricsCode << ")\n";
+            std::cout << metricsBody << "\n";
+        }
+
+        return (statusCode >= 200 && statusCode < 300 && metricsCode >= 200 && metricsCode < 300) ? 0 : 1;
+    }
+
+    const std::size_t samples = ReadSizeOption(command, "samples", demoRealtime ? 40U : 24U, 240U);
+    const int intervalMs = static_cast<int>(ReadSizeOption(command, "interval_ms", demoRealtime ? 100U : 150U, 2000U));
+    const bool executeActions = IsTruthyString(ReadOption(command, "execute"), !demoRealtime);
+    const std::string priority = ReadOption(command, "priority").empty() ? "auto" : ReadOption(command, "priority");
+
+    std::string startPayload = "{\"execute\":\"" + std::string(executeActions ? "true" : "false") + "\"," +
+        "\"priority\":\"" + EscapeJson(priority) + "\"";
+
+    const std::string decisionBudgetUs = ReadOption(command, "decision_budget_us");
+    if (!decisionBudgetUs.empty()) {
+        startPayload += ",\"decision_budget_us\":\"" + EscapeJson(decisionBudgetUs) + "\"";
+    }
+
+    const std::string targetFrameMs = ReadOption(command, "target_frame_ms");
+    if (!targetFrameMs.empty()) {
+        startPayload += ",\"targetFrameMs\":\"" + EscapeJson(targetFrameMs) + "\"";
+    }
+
+    if (demoRealtime) {
+        startPayload += ",\"demo_mode\":\"true\"";
+
+        const std::string goal = ReadOption(command, "goal").empty()
+            ? "stabilize active interaction target"
+            : ReadOption(command, "goal");
+        const std::string target = ReadOption(command, "target");
+        const std::string domain = ReadOption(command, "domain").empty() ? "generic" : ReadOption(command, "domain");
+
+        std::ostringstream goalPayload;
+        goalPayload << "{";
+        goalPayload << "\"goal\":\"" << EscapeJson(goal) << "\",";
+        goalPayload << "\"target\":\"" << EscapeJson(target) << "\",";
+        goalPayload << "\"domain\":\"" << EscapeJson(domain) << "\",";
+        goalPayload << "\"preferred_actions\":\"activate,select\",";
+        goalPayload << "\"active\":\"true\"";
+        goalPayload << "}";
+
+        const auto [goalCode, goalBody] = request("POST", "/ure/goal", goalPayload.str());
+        if (goalCode < 200 || goalCode >= 300) {
+            if (jsonMode) {
+                std::cout << "{\"error\":{\"code\":\"ure_goal_failed\",\"status\":" << goalCode
+                          << ",\"body\":" << (goalBody.empty() ? "{}" : goalBody) << "}}\n";
+            } else {
+                std::cerr << "Failed to set URE goal (" << goalCode << ")\n" << goalBody << "\n";
+            }
+            return 1;
+        }
+    }
+
+    startPayload += "}";
+
+    const auto [startCode, startBody] = request("POST", "/ure/start", startPayload);
+    if (startCode < 200 || startCode >= 300) {
+        if (jsonMode) {
+            std::cout << "{\"error\":{\"code\":\"ure_start_failed\",\"status\":" << startCode
+                      << ",\"body\":" << (startBody.empty() ? "{}" : startBody) << "}}\n";
+        } else {
+            std::cerr << "Failed to start URE runtime (" << startCode << ")\n" << startBody << "\n";
+        }
+        return 1;
+    }
+
+    std::vector<std::string> sampleBodies;
+    sampleBodies.reserve(samples);
+
+    for (std::size_t index = 0; index < samples; ++index) {
+        const auto [sampleCode, sampleBody] = request("GET", "/ure/status", "");
+        if (sampleCode >= 200 && sampleCode < 300) {
+            sampleBodies.push_back(sampleBody);
+        }
+
+        if (!jsonMode) {
+            std::cout << "URE sample " << (index + 1U) << "/" << samples << " (" << sampleCode << ")\n";
+            std::cout << sampleBody << "\n";
+        }
+
+        if (index + 1U < samples) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(intervalMs));
+        }
+    }
+
+    const auto [metricsCode, metricsBody] = request("GET", "/ure/metrics", "");
+    const auto [stopCode, stopBody] = request("POST", "/ure/stop", "{}");
+
+    if (jsonMode) {
+        std::cout << "{";
+        std::cout << "\"start\":" << (startBody.empty() ? "{}" : startBody) << ",";
+        std::cout << "\"samples\":[";
+        for (std::size_t index = 0; index < sampleBodies.size(); ++index) {
+            if (index > 0) {
+                std::cout << ",";
+            }
+            std::cout << sampleBodies[index];
+        }
+        std::cout << "],";
+        std::cout << "\"metrics_code\":" << metricsCode << ",";
+        std::cout << "\"metrics\":" << (metricsBody.empty() ? "{}" : metricsBody) << ",";
+        std::cout << "\"stop_code\":" << stopCode << ",";
+        std::cout << "\"stop\":" << (stopBody.empty() ? "{}" : stopBody);
+        std::cout << "}\n";
+    } else {
+        std::cout << "URE metrics (" << metricsCode << ")\n";
+        std::cout << metricsBody << "\n\n";
+        std::cout << "URE stop (" << stopCode << ")\n";
+        std::cout << stopBody << "\n";
+    }
+
+    return (metricsCode >= 200 && metricsCode < 300 && stopCode >= 200 && stopCode < 300) ? 0 : 1;
 }
 
 int CliApp::HandleDemo(const ParsedCommand& command) {

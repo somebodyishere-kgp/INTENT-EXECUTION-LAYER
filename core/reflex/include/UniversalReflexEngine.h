@@ -113,6 +113,15 @@ struct ReflexDecision {
     bool exploratory{false};
 };
 
+struct ReflexGoal {
+    std::string goal;
+    std::string target;
+    std::string domain;
+    std::vector<std::string> preferredActions;
+    bool active{false};
+    std::int64_t updatedAtMs{0};
+};
+
 struct ExperienceEntry {
     WorldState state;
     ReflexDecision action;
@@ -171,7 +180,8 @@ public:
         const WorldModel& model,
         const std::vector<Affordance>& affordances,
         const ReflexSafetyPolicy& safety,
-        const std::unordered_map<std::string, float>& failureBias) const;
+        const std::unordered_map<std::string, float>& failureBias,
+        const ReflexGoal* goal = nullptr) const;
 
 private:
     std::vector<PolicyRule> rules_;
@@ -193,7 +203,8 @@ public:
     ReflexStepResult Step(
         const EnvironmentState& state,
         const ReflexSafetyPolicy& safety,
-        std::int64_t decisionBudgetUs = 1000);
+        std::int64_t decisionBudgetUs = 1000,
+        const ReflexGoal* goal = nullptr);
 
     void RecordExecutionOutcome(const ReflexDecision& decision, bool success, std::optional<float> reward = std::nullopt);
 
@@ -232,5 +243,6 @@ std::string SerializeExplorationJson(const std::vector<ExplorationResult>& explo
 std::string SerializeReflexStepResultJson(const ReflexStepResult& step);
 std::string SerializeReflexMetricsJson(const ReflexMetricsSnapshot& metrics);
 std::string SerializeExperienceEntriesJson(const std::vector<ExperienceEntry>& entries);
+std::string SerializeReflexGoalJson(const ReflexGoal& goal);
 
 }  // namespace iee

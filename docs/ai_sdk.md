@@ -1,7 +1,7 @@
-# IEE v2.0 AI SDK and Platform Interface
+# IEE v3.1 AI SDK and Platform Interface
 
 ## Purpose
-IEE v2.0 keeps the v1.x SDK surfaces stable while adding platform-level deterministic contracts for semantic planning, policy gating, temporal state, sequence/workflow orchestration, and UCP envelopes.
+IEE v3.1 keeps v1.x/v2.x SDK surfaces stable while adding deterministic URE runtime control, goal conditioning, and merged reflex telemetry.
 
 ## Primary SDK Surface
 
@@ -13,7 +13,7 @@ Core calls:
 - `std::string IEEClient::GetStateAiJson()`
 - `ClientExecuteResponse IEEClient::Execute(const ClientExecuteRequest& request)`
 
-These remain compatibility-stable in v2.0.
+These remain compatibility-stable in v3.1.
 
 ## Action Interface Layer (v2.0)
 
@@ -74,7 +74,7 @@ Header: `core/platform/include/PlatformLayer.h`
 - `SerializeUcpActEnvelope(...)`
 - `SerializeUcpStateEnvelope(...)`
 
-## API Additions (v2.0)
+## API Additions (v2.0+v3.1)
 
 New/expanded routes:
 
@@ -90,10 +90,56 @@ New/expanded routes:
 - `POST /task/semantic`
 - `POST /ucp/act`
 - `GET /ucp/state`
+- `POST /ure/start`
+- `POST /ure/stop`
+- `GET /ure/status`
+- `POST /ure/goal`
+- `GET /ure/goal`
+- `GET /telemetry/reflex`
 
 Retained v1.x core routes:
 
 - `/execute`, `/act`, `/task/plan`, `/state/ai`, `/interaction-graph`, `/interaction-node/{id}`, `/trace/{trace_id}`, `/predict`, `/perf`, `/stream/*`, `/control/*`
+
+URE step-mode routes retained from v3.0:
+
+- `/ure/world-model`, `/ure/affordances`, `/ure/decision`, `/ure/metrics`, `/ure/experience`, `/ure/step`, `/ure/demo`
+
+## Continuous URE Runtime Contract (v3.1)
+
+### Start runtime
+
+`POST /ure/start`
+
+Flat JSON fields (string values):
+
+- `execute` (`"true"|"false"`)
+- `priority` (`"auto"|"high"|"medium"|"low"`)
+- `decision_budget_us`
+- control runtime fields such as `targetFrameMs`, `maxFrames`, `observationIntervalMs`, `decisionBudgetMs`
+
+### Goal update
+
+`POST /ure/goal`
+
+Fields:
+
+- `goal` (required unless `clear=true`)
+- `target`
+- `domain`
+- `preferred_actions` (comma/space-separated)
+- `active`
+- `clear`
+
+### Runtime status
+
+`GET /ure/status` includes:
+
+- runtime active flags
+- goal payload/version
+- last reflex timing/reason
+- reflex metrics and merged telemetry
+- optional control runtime status
 
 ## Semantic Request Contract
 

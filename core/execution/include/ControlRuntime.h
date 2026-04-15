@@ -5,8 +5,10 @@
 #include <condition_variable>
 #include <cstdint>
 #include <deque>
+#include <functional>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <thread>
 #include <vector>
@@ -83,6 +85,12 @@ struct ControlRuntimeSummary {
 
 class ControlRuntime {
 public:
+    using ExecutionObserver = std::function<void(
+        const Intent& intent,
+        const ExecutionResult& result,
+        const std::optional<FeedbackDelta>& delta,
+        bool mismatch)>;
+
     ControlRuntime(
         IntentRegistry& registry,
         ExecutionEngine& executionEngine,
@@ -99,6 +107,7 @@ public:
     bool LatestEnvironmentState(EnvironmentState* state) const;
     void SetDecisionProvider(std::shared_ptr<DecisionProvider> provider, int budgetMs = 2);
     void SetPredictor(std::shared_ptr<Predictor> predictor);
+    void SetExecutionObserver(ExecutionObserver observer);
     bool Predict(const Intent& intent, StateSnapshot* predictedState, std::string* diagnostics = nullptr) const;
     std::vector<Feedback> RecentFeedback(std::size_t limit = 32) const;
 
@@ -180,6 +189,9 @@ private:
 
     mutable std::mutex predictorMutex_;
     std::shared_ptr<Predictor> predictor_;
+
+    mutable std::mutex executionObserverMutex_;
+    ExecutionObserver executionObserver_;
 
     mutable std::mutex decisionMutex_;
     std::condition_variable decisionCv_;

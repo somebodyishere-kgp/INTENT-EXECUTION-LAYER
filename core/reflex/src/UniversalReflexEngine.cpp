@@ -2,11 +2,13 @@
 
 #include <algorithm>
 #include <array>
+#include <cctype>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
 #include <sstream>
+#include <utility>
 
 #include "InteractionGraph.h"
 
@@ -84,6 +86,116 @@ std::string ToAsciiLower(std::string value) {
         return static_cast<char>(ch);
     });
     return value;
+}
+
+std::vector<std::string> TokenizeLower(const std::string& value) {
+    const std::string normalized = ToAsciiLower(value);
+
+    std::vector<std::string> tokens;
+    std::string token;
+    token.reserve(16U);
+
+    for (const char ch : normalized) {
+        if ((ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9')) {
+            token.push_back(ch);
+            continue;
+        }
+
+        if (!token.empty()) {
+            tokens.push_back(std::move(token));
+            token.clear();
+        }
+    }
+
+    if (!token.empty()) {
+        tokens.push_back(std::move(token));
+    }
+
+    std::sort(tokens.begin(), tokens.end());
+    tokens.erase(std::unique(tokens.begin(), tokens.end()), tokens.end());
+    return tokens;
+}
+
+bool TokenSetContains(const std::vector<std::string>& haystack, const std::string& value) {
+    if (value.empty()) {
+        return false;
+    }
+
+    const std::string normalized = ToAsciiLower(value);
+    return std::binary_search(haystack.begin(), haystack.end(), normalized);
+}
+
+std::string NormalizeActionToken(const std::string& action) {
+    const std::string lower = ToAsciiLower(action);
+    if (lower == "activate" || lower == "click" || lower == "acquire" ||
+        lower == "target" || lower == "track" || lower == "navigate") {
+        return "activate";
+    }
+
+    if (lower == "select" || lower == "drag" || lower == "adjust") {
+        return "select";
+    }
+
+    if (lower == "set_value" || lower == "setvalue" || lower == "input" || lower == "type") {
+        return "set_value";
+    }
+
+    return lower;
+}
+
+bool GoalMatchesObject(const ReflexGoal& goal, const WorldObject& object) {
+    if (!goal.active) {
+        return false;
+    }
+
+    const std::vector<std::string> objectTokens = TokenizeLower(object.id + " " + object.type + " " + object.label);
+    const std::vector<std::string> goalTokens =
+        TokenizeLower(goal.goal + " " + goal.target + " " + goal.domain);
+
+    if (goalTokens.empty() || objectTokens.empty()) {
+        return false;
+    }
+
+    std::size_t matched = 0;
+    for (const std::string& token : goalTokens) {
+        if (TokenSetContains(objectTokens, token)) {
+            ++matched;
+        }
+    }
+
+    if (!goal.target.empty()) {
+        const std::vector<std::string> targetTokens = TokenizeLower(goal.target);
+        bool hasTargetMatch = false;
+        for (const std::string& token : targetTokens) {
+            if (TokenSetContains(objectTokens, token)) {
+                hasTargetMatch = true;
+                break;
+            }
+        }
+        if (!hasTargetMatch) {
+            return false;
+        }
+    }
+
+    return matched > 0U;
+}
+
+std::string SelectGoalPreferredAction(const ReflexGoal& goal, const std::vector<std::string>& affordanceActions) {
+    if (!goal.active || goal.preferredActions.empty() || affordanceActions.empty()) {
+        return "";
+    }
+
+    for (const std::string& preferred : goal.preferredActions) {
+        const std::string normalizedPreferred = NormalizeActionToken(preferred);
+        for (const std::string& candidate : affordanceActions) {
+            const std::string normalizedCandidate = NormalizeActionToken(candidate);
+            if (normalizedCandidate == normalizedPreferred || ToAsciiLower(candidate) == ToAsciiLower(preferred)) {
+                return candidate;
+            }
+        }
+    }
+
+    return "";
 }
 
 std::size_t HashCombine(std::size_t seed, std::size_t value) {
@@ -550,7 +662,8 @@ ReflexDecision MetaPolicyEngine::Decide(
     const WorldModel& model,
     const std::vector<Affordance>& affordances,
     const ReflexSafetyPolicy& safety,
-    const std::unordered_map<std::string, float>& failureBias) const {
+    const std::unordered_map<std::string, float>& failureBias,
+    const ReflexGoal* goal) const {
     ReflexDecision best;
 
     std::unordered_map<std::string, Affordance> affordanceById;
@@ -601,6 +714,16 @@ ReflexDecision MetaPolicyEngine::Decide(
         std::string selectedAction = affordanceIt->second.actions.front();
         if (object.type == "dynamic_object" && object.salience >= 0.75F) {
             selectedAction = "avoid";
+        }
+
+        const bool goalMatched = goal != nullptr && GoalMatchesObject(*goal, object);
+        if (goalMatched) {
+            const std::string preferredAction = SelectGoalPreferredAction(*goal, affordanceIt->second.actions);
+            if (!preferredAction.empty()) {
+                selectedAction = preferredAction;
+            }
+            basePriority = std::clamp(basePriority + 0.18F, 0.0F, 1.0F);
+            reason = "goal_conditioned_" + reason;
         }
 
         const std::string biasKey = selectedAction + "|" + object.id;
@@ -700,7 +823,8 @@ UniversalReflexAgent::UniversalReflexAgent() = default;
 ReflexStepResult UniversalReflexAgent::Step(
     const EnvironmentState& state,
     const ReflexSafetyPolicy& safety,
-    std::int64_t decisionBudgetUs) {
+    std::int64_t decisionBudgetUs,
+    const ReflexGoal* goal) {
     const auto loopStart = std::chrono::steady_clock::now();
 
     ReflexStepResult result;
@@ -732,7 +856,7 @@ ReflexStepResult UniversalReflexAgent::Step(
     }
 
     const auto decisionStart = std::chrono::steady_clock::now();
-    result.decision = policyEngine_.Decide(result.worldModel, result.affordances, safety, failureBiasByKey_);
+    result.decision = policyEngine_.Decide(result.worldModel, result.affordances, safety, failureBiasByKey_, goal);
     const auto decisionEnd = std::chrono::steady_clock::now();
 
     result.decisionTimeUs = std::chrono::duration_cast<std::chrono::microseconds>(decisionEnd - decisionStart).count();
@@ -1055,6 +1179,26 @@ std::string SerializeExperienceEntriesJson(const std::vector<ExperienceEntry>& e
         json << "}";
     }
     json << "]";
+    return json.str();
+}
+
+std::string SerializeReflexGoalJson(const ReflexGoal& goal) {
+    std::ostringstream json;
+    json << "{";
+    json << "\"goal\":\"" << EscapeJson(goal.goal) << "\",";
+    json << "\"target\":\"" << EscapeJson(goal.target) << "\",";
+    json << "\"domain\":\"" << EscapeJson(goal.domain) << "\",";
+    json << "\"active\":" << (goal.active ? "true" : "false") << ",";
+    json << "\"updated_at_ms\":" << goal.updatedAtMs << ",";
+    json << "\"preferred_actions\":[";
+    for (std::size_t index = 0; index < goal.preferredActions.size(); ++index) {
+        if (index > 0) {
+            json << ",";
+        }
+        json << "\"" << EscapeJson(goal.preferredActions[index]) << "\"";
+    }
+    json << "]";
+    json << "}";
     return json.str();
 }
 

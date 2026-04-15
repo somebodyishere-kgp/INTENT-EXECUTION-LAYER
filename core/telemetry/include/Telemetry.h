@@ -53,6 +53,14 @@ struct TelemetrySnapshot {
     std::uint64_t traceBufferSize{0};
     bool traceBufferWrapped{false};
     int rotationFileIndex{0};
+    std::uint64_t reflexSamples{0};
+    std::uint64_t reflexIntentsProduced{0};
+    double reflexAverageDecisionMs{0.0};
+    double reflexP95DecisionMs{0.0};
+    double reflexAverageLoopMs{0.0};
+    std::uint64_t reflexOverBudgetCount{0};
+    std::uint64_t reflexExploratoryCount{0};
+    std::uint64_t reflexGoalConditionedCount{0};
     std::vector<AdapterTelemetryMetrics> adapterMetrics;
 };
 
@@ -142,6 +150,32 @@ struct VisionSnapshot {
     std::optional<VisionLatencySample> latest;
 };
 
+struct ReflexTelemetrySample {
+    std::uint64_t frame{0};
+    std::int64_t decisionTimeUs{0};
+    std::int64_t loopTimeUs{0};
+    float priority{0.0F};
+    bool decisionWithinBudget{true};
+    bool exploratory{false};
+    bool executable{false};
+    bool intentProduced{false};
+    bool goalConditioned{false};
+    std::string reason;
+    std::chrono::system_clock::time_point timestamp{std::chrono::system_clock::now()};
+};
+
+struct ReflexTelemetrySnapshot {
+    std::uint64_t sampleCount{0};
+    std::uint64_t intentsProduced{0};
+    double averageDecisionMs{0.0};
+    double p95DecisionMs{0.0};
+    double averageLoopMs{0.0};
+    std::uint64_t overBudgetCount{0};
+    std::uint64_t exploratoryCount{0};
+    std::uint64_t goalConditionedCount{0};
+    std::optional<ReflexTelemetrySample> latest;
+};
+
 class Telemetry {
 public:
     Telemetry();
@@ -161,6 +195,7 @@ public:
     void LogResolutionTiming(std::chrono::milliseconds duration);
     void LogLatencyBreakdown(const LatencyBreakdownSample& sample);
     void LogVisionSample(const VisionLatencySample& sample);
+    void LogReflexSample(const ReflexTelemetrySample& sample);
 
     std::vector<ExecutionTrace> RecentExecutions(std::size_t limit = 50) const;
     std::vector<ExecutionTrace> QueryExecutions(
@@ -174,6 +209,7 @@ public:
     PerformanceContractSnapshot PerformanceContract(double targetBudgetMs, std::size_t limit = 200) const;
     LatencyPercentilesSnapshot LatencyPercentiles(std::size_t limit = 200) const;
     VisionSnapshot VisionLatencySnapshot(std::size_t limit = 200) const;
+    ReflexTelemetrySnapshot ReflexSnapshot(std::size_t limit = 256) const;
 
     std::string SerializeSnapshotJson() const;
     std::string SerializeTraceJson(const std::string& traceId) const;
@@ -182,6 +218,7 @@ public:
     std::string SerializePerformanceContractJson(double targetBudgetMs, std::size_t limit = 200) const;
     std::string SerializeLatencyPercentilesJson(std::size_t limit = 200) const;
     std::string SerializeVisionJson(std::size_t limit = 200) const;
+    std::string SerializeReflexJson(std::size_t limit = 256) const;
 
 private:
     struct AdapterAggregate {
@@ -214,6 +251,7 @@ private:
     std::deque<std::string> failures_;
     std::deque<LatencyBreakdownSample> latencyBreakdowns_;
     std::deque<VisionLatencySample> visionSamples_;
+    std::deque<ReflexTelemetrySample> reflexSamples_;
 
     std::unordered_map<std::string, AdapterAggregate> adapterAggregates_;
 
@@ -254,6 +292,7 @@ private:
     static constexpr std::size_t kMaxPersistenceQueue = 4096;
     static constexpr std::size_t kMaxLatencySamples = 4096;
     static constexpr std::size_t kMaxVisionSamples = 4096;
+    static constexpr std::size_t kMaxReflexSamples = 4096;
 };
 
 }  // namespace iee

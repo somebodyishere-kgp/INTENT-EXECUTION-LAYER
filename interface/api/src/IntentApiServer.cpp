@@ -9,8 +9,10 @@
 #include <cctype>
 #include <charconv>
 #include <cmath>
+#include <functional>
 #include <limits>
 #include <map>
+#include <optional>
 #include <set>
 #include <sstream>
 #include <string_view>
@@ -1183,6 +1185,211 @@ ReflexSafetyPolicy BuildReflexSafetyPolicy(const PermissionPolicy& policy) {
     return safety;
 }
 
+std::string ToString(ControlPriority priority) {
+    switch (priority) {
+    case ControlPriority::High:
+        return "high";
+    case ControlPriority::Medium:
+        return "medium";
+    case ControlPriority::Low:
+    default:
+        return "low";
+    }
+}
+
+ControlPriority ParseControlPriorityOrDefault(const std::string& value, ControlPriority fallback) {
+    const std::string normalized = ToAsciiLower(value);
+    if (normalized == "high") {
+        return ControlPriority::High;
+    }
+    if (normalized == "medium") {
+        return ControlPriority::Medium;
+    }
+    if (normalized == "low") {
+        return ControlPriority::Low;
+    }
+    return fallback;
+}
+
+std::vector<std::string> ParsePreferredActions(const std::string& value) {
+    std::vector<std::string> actions;
+    if (value.empty()) {
+        return actions;
+    }
+
+    std::string token;
+    for (const char ch : value) {
+        if (ch == ',' || ch == ';' || ch == '|' || ch == ' ') {
+            if (!token.empty()) {
+                actions.push_back(ToAsciiLower(token));
+                token.clear();
+            }
+            continue;
+        }
+        token.push_back(ch);
+    }
+    if (!token.empty()) {
+        actions.push_back(ToAsciiLower(token));
+    }
+
+    std::sort(actions.begin(), actions.end());
+    actions.erase(std::unique(actions.begin(), actions.end()), actions.end());
+    return actions;
+}
+
+bool IsGoalConditionedReason(const std::string& reason) {
+    return reason.rfind("goal_conditioned_", 0) == 0;
+}
+
+ControlPriority DecidePriorityForReflex(const ReflexDecision& decision, bool autoPriority, ControlPriority configuredPriority) {
+    if (!autoPriority) {
+        return configuredPriority;
+    }
+
+    if (decision.priority >= 0.85F) {
+        return ControlPriority::High;
+    }
+    if (decision.priority >= 0.62F) {
+        return ControlPriority::Medium;
+    }
+    return ControlPriority::Low;
+}
+
+Intent BuildIntentFromReflexDecision(const ReflexDecision& decision, std::uint64_t frame, ControlPriority priority) {
+    Intent intent;
+    intent.id = "ure-runtime-" + std::to_string(frame) + "-" + decision.objectId;
+    intent.action = IntentActionFromString(decision.action);
+    intent.name = ToString(intent.action);
+    intent.target.type = TargetType::UiElement;
+    intent.target.label = Wide(decision.targetLabel.empty() ? decision.objectId : decision.targetLabel);
+    intent.params.values["control_priority"] = Wide(ToString(priority));
+    intent.params.values["ure_object_id"] = Wide(decision.objectId);
+    intent.params.values["ure_reason"] = Wide(decision.reason);
+    intent.params.values["ure_exploratory"] = decision.exploratory ? L"true" : L"false";
+    intent.source = "ure-runtime";
+    intent.confidence = std::clamp(decision.priority, 0.0F, 1.0F);
+    intent.constraints.timeoutMs = 12;
+    intent.constraints.maxRetries = 0;
+    intent.constraints.allowFallback = false;
+    return intent;
+}
+
+class UreDecisionProvider final : public DecisionProvider {
+public:
+    struct RuntimeSnapshot {
+        bool active{false};
+        bool executeActions{false};
+        bool autoPriority{true};
+        std::int64_t decisionBudgetUs{1000};
+        ControlPriority configuredPriority{ControlPriority::Medium};
+        ReflexGoal goal;
+    };
+
+    using RuntimeSnapshotFn = std::function<RuntimeSnapshot()>;
+    using StepObserverFn = std::function<void(const ReflexStepResult&, bool intentProduced, bool goalConditioned)>;
+
+    UreDecisionProvider(
+        UniversalReflexAgent* reflexAgent,
+        std::mutex* reflexMutex,
+        Telemetry* telemetry,
+        RuntimeSnapshotFn runtimeSnapshotFn,
+        StepObserverFn stepObserverFn)
+        : reflexAgent_(reflexAgent),
+          reflexMutex_(reflexMutex),
+          telemetry_(telemetry),
+          runtimeSnapshotFn_(std::move(runtimeSnapshotFn)),
+          stepObserverFn_(std::move(stepObserverFn)) {}
+
+    std::string Name() const override {
+        return "ure_realtime";
+    }
+
+    std::vector<Intent> Decide(const StateSnapshot& state, std::chrono::milliseconds, std::string* diagnostics) override {
+        if (reflexAgent_ == nullptr || reflexMutex_ == nullptr || telemetry_ == nullptr || runtimeSnapshotFn_ == nullptr) {
+            if (diagnostics != nullptr) {
+                *diagnostics = "ure decision provider not configured";
+            }
+            return {};
+        }
+
+        const RuntimeSnapshot runtime = runtimeSnapshotFn_();
+        if (!runtime.active) {
+            if (diagnostics != nullptr) {
+                *diagnostics = "ure runtime inactive";
+            }
+            return {};
+        }
+
+        ReflexSafetyPolicy safety = BuildReflexSafetyPolicy(PermissionPolicyStore::Get());
+        safety.allowExecute = safety.allowExecute && runtime.executeActions;
+
+        ReflexStepResult step;
+        {
+            std::lock_guard<std::mutex> lock(*reflexMutex_);
+            step = reflexAgent_->Step(
+                state,
+                safety,
+                std::clamp<std::int64_t>(runtime.decisionBudgetUs, 100LL, 20000LL),
+                runtime.goal.active ? &runtime.goal : nullptr);
+        }
+
+        const bool goalConditioned = IsGoalConditionedReason(step.decision.reason);
+        bool intentProduced = false;
+        std::vector<Intent> intents;
+
+        if (runtime.executeActions && step.decision.executable && !step.decision.action.empty()) {
+            IntentAction action = IntentActionFromString(step.decision.action);
+            if (action != IntentAction::Unknown) {
+                const ControlPriority priority = DecidePriorityForReflex(
+                    step.decision,
+                    runtime.autoPriority,
+                    runtime.configuredPriority);
+
+                Intent intent = BuildIntentFromReflexDecision(step.decision, state.sequence, priority);
+                intentProduced = true;
+                intents.push_back(std::move(intent));
+
+                if (diagnostics != nullptr) {
+                    *diagnostics = "ure decision produced intent";
+                }
+            } else if (diagnostics != nullptr) {
+                *diagnostics = "ure decision mapped to unsupported action";
+            }
+        } else if (diagnostics != nullptr) {
+            *diagnostics = runtime.executeActions
+                ? "ure decision not executable"
+                : "ure runtime execute_actions disabled";
+        }
+
+        ReflexTelemetrySample sample;
+        sample.frame = state.sequence;
+        sample.decisionTimeUs = step.decisionTimeUs;
+        sample.loopTimeUs = step.loopTimeUs;
+        sample.priority = step.decision.priority;
+        sample.decisionWithinBudget = step.decisionWithinBudget;
+        sample.exploratory = step.decision.exploratory;
+        sample.executable = step.decision.executable;
+        sample.intentProduced = intentProduced;
+        sample.goalConditioned = goalConditioned;
+        sample.reason = step.decision.reason;
+        sample.timestamp = std::chrono::system_clock::now();
+        telemetry_->LogReflexSample(sample);
+
+        if (stepObserverFn_ != nullptr) {
+            stepObserverFn_(step, intentProduced, goalConditioned);
+        }
+
+        return intents;
+    }
+
+private:
+    UniversalReflexAgent* reflexAgent_{nullptr};
+    std::mutex* reflexMutex_{nullptr};
+    Telemetry* telemetry_{nullptr};
+    RuntimeSnapshotFn runtimeSnapshotFn_;
+    StepObserverFn stepObserverFn_;
+};
+
 bool CaptureEnvironmentState(
     const std::unique_ptr<ControlRuntime>& controlRuntime,
     const std::shared_ptr<EnvironmentAdapter>& fallbackAdapter,
@@ -1555,6 +1762,58 @@ ControlRuntime& IntentApiServer::EnsureControlRuntime() {
     return *controlRuntime_;
 }
 
+std::string IntentApiServer::SerializeUreStatusJson() const {
+    UreRuntimeState runtime;
+    {
+        std::lock_guard<std::mutex> lock(ureRuntimeMutex_);
+        runtime = ureRuntime_;
+    }
+
+    ReflexMetricsSnapshot metrics;
+    {
+        std::lock_guard<std::mutex> lock(reflexMutex_);
+        metrics = reflexAgent_.Metrics();
+    }
+
+    const bool controlActive = controlRuntime_ != nullptr && controlRuntime_->Status().active;
+
+    std::ostringstream json;
+    json << "{";
+    json << "\"active\":" << (runtime.active ? "true" : "false") << ",";
+    json << "\"control_active\":" << (controlActive ? "true" : "false") << ",";
+    json << "\"execute_actions\":" << (runtime.executeActions ? "true" : "false") << ",";
+    json << "\"demo_mode\":" << (runtime.demoMode ? "true" : "false") << ",";
+    json << "\"auto_priority\":" << (runtime.autoPriority ? "true" : "false") << ",";
+    json << "\"priority\":\"" << EscapeJson(ToString(runtime.priority)) << "\",";
+    json << "\"decision_budget_us\":" << runtime.decisionBudgetUs << ",";
+    json << "\"frames_evaluated\":" << runtime.framesEvaluated << ",";
+    json << "\"intents_produced\":" << runtime.intentsProduced << ",";
+    json << "\"execution_attempts\":" << runtime.executionAttempts << ",";
+    json << "\"execution_successes\":" << runtime.executionSuccesses << ",";
+    json << "\"execution_failures\":" << runtime.executionFailures << ",";
+    json << "\"goal_version\":" << runtime.goalVersion << ",";
+    json << "\"last_reason\":\"" << EscapeJson(runtime.lastReason) << "\",";
+    json << "\"last_trace_id\":\"" << EscapeJson(runtime.lastTraceId) << "\",";
+    json << "\"last_decision_time_us\":" << runtime.lastDecisionTimeUs << ",";
+    json << "\"last_loop_time_us\":" << runtime.lastLoopTimeUs << ",";
+    json << "\"last_goal_conditioned\":" << (runtime.lastGoalConditioned ? "true" : "false") << ",";
+    json << "\"started_at_ms\":" << EpochMs(runtime.startedAt) << ",";
+    if (runtime.lastTickAt.time_since_epoch().count() > 0) {
+        json << "\"last_tick_ms\":" << EpochMs(runtime.lastTickAt) << ",";
+    } else {
+        json << "\"last_tick_ms\":0,";
+    }
+    json << "\"goal\":" << SerializeReflexGoalJson(runtime.goal) << ",";
+    json << "\"metrics\":" << SerializeReflexMetricsJson(metrics) << ",";
+    json << "\"telemetry\":" << telemetry_.SerializeReflexJson(256);
+    if (controlRuntime_ != nullptr) {
+        json << ",\"control_status\":" << ControlRuntime::SerializeSnapshotJson(controlRuntime_->Status());
+    }
+    json << "}";
+
+    return json.str();
+}
+
 std::string IntentApiServer::HandleRequest(const std::string& request) {
     std::string method;
     std::string pathWithQuery;
@@ -1580,6 +1839,11 @@ std::string IntentApiServer::HandleRequest(const std::string& request) {
             std::chrono::steady_clock::now() - startedAt_)
                                          .count();
         const bool controlActive = controlRuntime_ != nullptr && controlRuntime_->Status().active;
+        bool ureActive = false;
+        {
+            std::lock_guard<std::mutex> lock(ureRuntimeMutex_);
+            ureActive = ureRuntime_.active;
+        }
 
         std::ostringstream json;
         json << "{";
@@ -1590,6 +1854,7 @@ std::string IntentApiServer::HandleRequest(const std::string& request) {
         json << "\"success_rate\":" << snapshot.successRate << ",";
         json << "\"average_latency_ms\":" << snapshot.averageLatencyMs << ",";
         json << "\"control_active\":" << (controlActive ? "true" : "false") << ",";
+        json << "\"ure_active\":" << (ureActive ? "true" : "false") << ",";
         json << "\"persisted_traces\":" << snapshot.persistedTraceCount;
         json << "}";
 
@@ -2126,6 +2391,11 @@ std::string IntentApiServer::HandleRequest(const std::string& request) {
         return BuildResponse(200, "OK", telemetry_.SerializeLatencyPercentilesJson(limit));
     }
 
+    if (method == "GET" && path == "/telemetry/reflex") {
+        const std::size_t limit = ReadQuerySize(query, "limit", 256U, 1U, 4096U);
+        return BuildResponse(200, "OK", telemetry_.SerializeReflexJson(limit));
+    }
+
     if (method == "GET" && path == "/perf/frame-consistency") {
         const std::size_t limit = ReadQuerySize(query, "limit", 64U, 1U, 256U);
         const FrameConsistencyMetrics metrics = temporalStateEngine_.FrameConsistency(limit);
@@ -2292,6 +2562,15 @@ std::string IntentApiServer::HandleRequest(const std::string& request) {
     if (method == "POST" && path == "/control/stop") {
         if (!controlRuntime_) {
             return BuildErrorResponse(409, "Conflict", "control_not_running", "Control runtime is not running");
+        }
+
+        controlRuntime_->SetDecisionProvider(nullptr, 2);
+        controlRuntime_->SetExecutionObserver(nullptr);
+
+        {
+            std::lock_guard<std::mutex> lock(ureRuntimeMutex_);
+            ureRuntime_.active = false;
+            ureRuntime_.executeActions = false;
         }
 
         const ControlRuntimeSummary summary = controlRuntime_->Stop();
@@ -2573,6 +2852,258 @@ std::string IntentApiServer::HandleRequest(const std::string& request) {
         return BuildResponse(200, "OK", SerializeUcpStateEnvelope(view));
     }
 
+    if (method == "POST" && path == "/ure/start") {
+        std::map<std::string, std::string> payload;
+        if (!body.empty()) {
+            std::string jsonError;
+            if (!ParseFlatJsonObject(body, &payload, &jsonError)) {
+                return BuildErrorResponse(400, "Bad Request", "invalid_json", jsonError);
+            }
+        }
+
+        ControlRuntimeConfig config;
+        int targetFrameMs = 0;
+        if (ParseInt32(
+                ReadPayloadValue(payload, {"latencyBudgetMs", "latency_budget_ms", "targetFrameMs", "target_frame_ms"}),
+                &targetFrameMs)) {
+            config.targetFrameMs = targetFrameMs;
+        }
+
+        std::uint64_t maxFrames = 0;
+        if (ParseUint64(ReadPayloadValue(payload, {"maxFrames", "max_frames"}), &maxFrames)) {
+            if (maxFrames > 1000000ULL) {
+                return BuildErrorResponse(400, "Bad Request", "max_frames_exceeded", "maxFrames exceeds safety limit");
+            }
+            config.maxFrames = maxFrames;
+        }
+
+        int observationIntervalMs = 0;
+        if (ParseInt32(
+                ReadPayloadValue(payload, {"observationIntervalMs", "observation_interval_ms"}),
+                &observationIntervalMs)) {
+            config.observationIntervalMs = observationIntervalMs;
+        }
+
+        int decisionBudgetMs = 0;
+        if (ParseInt32(
+                ReadPayloadValue(payload, {"decisionBudgetMs", "decision_budget_ms"}),
+                &decisionBudgetMs)) {
+            config.decisionBudgetMs = decisionBudgetMs;
+        }
+
+        bool executeActions = true;
+        ParseBoolString(ReadPayloadValue(payload, {"execute", "execute_actions", "run"}), &executeActions);
+
+        bool demoMode = false;
+        ParseBoolString(ReadPayloadValue(payload, {"demo_mode", "demo"}), &demoMode);
+
+        std::int64_t decisionBudgetUs = 1000;
+        int parsedBudgetUs = 0;
+        if (ParseInt32(ReadPayloadValue(payload, {"decision_budget_us", "decisionBudgetUs"}), &parsedBudgetUs) && parsedBudgetUs > 0) {
+            decisionBudgetUs = std::clamp<std::int64_t>(parsedBudgetUs, 100, 20000);
+        }
+
+        const std::string priorityRaw = ReadPayloadValue(payload, {"priority", "control_priority"});
+        const std::string normalizedPriority = ToAsciiLower(priorityRaw);
+        const bool autoPriority = normalizedPriority.empty() || normalizedPriority == "auto";
+        const ControlPriority configuredPriority = ParseControlPriorityOrDefault(normalizedPriority, ControlPriority::Medium);
+
+        ControlRuntime& runtime = EnsureControlRuntime();
+        bool controlStarted = false;
+        std::string message;
+        const ControlRuntimeSnapshot preStart = runtime.Status();
+        if (!preStart.active) {
+            controlStarted = runtime.Start(config, &message);
+            if (!controlStarted) {
+                return BuildResponse(409, "Conflict", BuildErrorBody("ure_control_start_failed", message));
+            }
+        } else {
+            message = "control runtime already running";
+        }
+
+        {
+            std::lock_guard<std::mutex> lock(ureRuntimeMutex_);
+            if (!ureRuntime_.active) {
+                ureRuntime_.startedAt = std::chrono::system_clock::now();
+                ureRuntime_.framesEvaluated = 0;
+                ureRuntime_.intentsProduced = 0;
+                ureRuntime_.executionAttempts = 0;
+                ureRuntime_.executionSuccesses = 0;
+                ureRuntime_.executionFailures = 0;
+                ureRuntime_.lastTraceId.clear();
+                ureRuntime_.lastReason.clear();
+                ureRuntime_.lastDecisionTimeUs = 0;
+                ureRuntime_.lastLoopTimeUs = 0;
+                ureRuntime_.lastGoalConditioned = false;
+                ureRuntime_.lastTickAt = std::chrono::system_clock::time_point{};
+            }
+
+            ureRuntime_.active = true;
+            ureRuntime_.executeActions = executeActions;
+            ureRuntime_.demoMode = demoMode;
+            ureRuntime_.autoPriority = autoPriority;
+            ureRuntime_.priority = configuredPriority;
+            ureRuntime_.decisionBudgetUs = decisionBudgetUs;
+        }
+
+        auto provider = std::make_shared<UreDecisionProvider>(
+            &reflexAgent_,
+            &reflexMutex_,
+            &telemetry_,
+            [this]() {
+                UreDecisionProvider::RuntimeSnapshot snapshot;
+                std::lock_guard<std::mutex> lock(ureRuntimeMutex_);
+                snapshot.active = ureRuntime_.active;
+                snapshot.executeActions = ureRuntime_.executeActions;
+                snapshot.autoPriority = ureRuntime_.autoPriority;
+                snapshot.decisionBudgetUs = ureRuntime_.decisionBudgetUs;
+                snapshot.configuredPriority = ureRuntime_.priority;
+                snapshot.goal = ureRuntime_.goal;
+                return snapshot;
+            },
+            [this](const ReflexStepResult& step, bool intentProduced, bool goalConditioned) {
+                std::lock_guard<std::mutex> lock(ureRuntimeMutex_);
+                ++ureRuntime_.framesEvaluated;
+                if (intentProduced) {
+                    ++ureRuntime_.intentsProduced;
+                }
+                ureRuntime_.lastDecisionTimeUs = step.decisionTimeUs;
+                ureRuntime_.lastLoopTimeUs = step.loopTimeUs;
+                ureRuntime_.lastReason = step.decision.reason;
+                ureRuntime_.lastGoalConditioned = goalConditioned;
+                ureRuntime_.lastTickAt = std::chrono::system_clock::now();
+            });
+
+        runtime.SetDecisionProvider(provider, static_cast<int>(std::clamp<std::int64_t>(decisionBudgetUs / 1000, 1, 50)));
+        runtime.SetExecutionObserver([this](
+                                       const Intent& intent,
+                                       const ExecutionResult& result,
+                                       const std::optional<FeedbackDelta>&,
+                                       bool mismatch) {
+            if (intent.source != "ure-runtime") {
+                return;
+            }
+
+            ReflexDecision decision;
+            decision.objectId = Narrow(intent.params.Get("ure_object_id"));
+            decision.action = ToString(intent.action);
+            decision.targetLabel = Narrow(intent.target.label);
+            decision.reason = Narrow(intent.params.Get("ure_reason"));
+            decision.exploratory = Narrow(intent.params.Get("ure_exploratory")) == "true";
+
+            {
+                std::lock_guard<std::mutex> reflexLock(reflexMutex_);
+                const float reward = result.IsSuccess() ? (mismatch ? 0.25F : 1.0F) : -1.0F;
+                reflexAgent_.RecordExecutionOutcome(decision, result.IsSuccess(), reward);
+            }
+
+            std::lock_guard<std::mutex> runtimeLock(ureRuntimeMutex_);
+            ++ureRuntime_.executionAttempts;
+            if (result.IsSuccess()) {
+                ++ureRuntime_.executionSuccesses;
+            } else {
+                ++ureRuntime_.executionFailures;
+            }
+            ureRuntime_.lastTraceId = result.traceId;
+        });
+
+        std::ostringstream json;
+        json << "{";
+        json << "\"started\":" << (controlStarted ? "true" : "false") << ",";
+        json << "\"message\":\"" << EscapeJson(message) << "\",";
+        json << "\"status\":" << SerializeUreStatusJson();
+        json << "}";
+
+        return BuildResponse(200, "OK", json.str());
+    }
+
+    if (method == "POST" && path == "/ure/stop") {
+        if (!controlRuntime_) {
+            return BuildErrorResponse(409, "Conflict", "ure_not_running", "URE runtime is not running");
+        }
+
+        {
+            std::lock_guard<std::mutex> lock(ureRuntimeMutex_);
+            if (!ureRuntime_.active) {
+                return BuildErrorResponse(409, "Conflict", "ure_not_running", "URE runtime is not running");
+            }
+            ureRuntime_.active = false;
+            ureRuntime_.executeActions = false;
+        }
+
+        controlRuntime_->SetDecisionProvider(nullptr, 2);
+        controlRuntime_->SetExecutionObserver(nullptr);
+
+        std::ostringstream json;
+        json << "{";
+        json << "\"stopped\":true,";
+        json << "\"status\":" << SerializeUreStatusJson();
+        json << "}";
+        return BuildResponse(200, "OK", json.str());
+    }
+
+    if (method == "GET" && path == "/ure/status") {
+        return BuildResponse(200, "OK", SerializeUreStatusJson());
+    }
+
+    if ((method == "POST" && path == "/ure/goal") || (method == "GET" && path == "/ure/goal")) {
+        if (method == "GET") {
+            std::lock_guard<std::mutex> lock(ureRuntimeMutex_);
+            return BuildResponse(200, "OK", SerializeReflexGoalJson(ureRuntime_.goal));
+        }
+
+        std::map<std::string, std::string> payload;
+        std::string jsonError;
+        if (!ParseFlatJsonObject(body, &payload, &jsonError)) {
+            return BuildErrorResponse(400, "Bad Request", "invalid_json", jsonError);
+        }
+
+        bool clear = false;
+        ParseBoolString(ReadPayloadValue(payload, {"clear", "reset"}), &clear);
+
+        ReflexGoal goalSnapshot;
+        std::uint64_t goalVersionSnapshot = 0;
+        {
+            std::lock_guard<std::mutex> lock(ureRuntimeMutex_);
+            if (clear) {
+                ureRuntime_.goal = ReflexGoal{};
+            } else {
+                const std::string goal = ReadPayloadValue(payload, {"goal", "objective"});
+                if (goal.empty()) {
+                    return BuildErrorResponse(400, "Bad Request", "missing_goal", "Missing required field: goal");
+                }
+
+                ureRuntime_.goal.goal = goal;
+                ureRuntime_.goal.target = ReadPayloadValue(payload, {"target", "target_hint"});
+                ureRuntime_.goal.domain = ReadPayloadValue(payload, {"domain"});
+
+                const std::string preferredActionsRaw =
+                    ReadPayloadValue(payload, {"preferred_actions", "preferredActions", "actions"});
+                ureRuntime_.goal.preferredActions = ParsePreferredActions(preferredActionsRaw);
+
+                bool active = true;
+                const std::string activeRaw = ReadPayloadValue(payload, {"active"});
+                if (!activeRaw.empty()) {
+                    ParseBoolString(activeRaw, &active);
+                }
+                ureRuntime_.goal.active = active;
+                ureRuntime_.goal.updatedAtMs = EpochMs(std::chrono::system_clock::now());
+            }
+
+            ureRuntime_.goalVersion += 1;
+            goalSnapshot = ureRuntime_.goal;
+            goalVersionSnapshot = ureRuntime_.goalVersion;
+        }
+
+        std::ostringstream json;
+        json << "{";
+        json << "\"goal_version\":" << goalVersionSnapshot << ",";
+        json << "\"goal\":" << SerializeReflexGoalJson(goalSnapshot) << ",";
+        json << "\"status\":" << SerializeUreStatusJson();
+        json << "}";
+        return BuildResponse(200, "OK", json.str());
+    }
+
     if (method == "GET" && path == "/ure/world-model") {
         bool runtimeActive = false;
         EnvironmentState state;
@@ -2584,10 +3115,17 @@ std::string IntentApiServer::HandleRequest(const std::string& request) {
         temporalStateEngine_.Record(state);
 
         const ReflexSafetyPolicy safety = BuildReflexSafetyPolicy(PermissionPolicyStore::Get());
+        ReflexGoal activeGoal;
+        bool hasActiveGoal = false;
+        {
+            std::lock_guard<std::mutex> goalLock(ureRuntimeMutex_);
+            activeGoal = ureRuntime_.goal;
+            hasActiveGoal = ureRuntime_.goal.active;
+        }
         ReflexStepResult step;
         {
             std::lock_guard<std::mutex> lock(reflexMutex_);
-            step = reflexAgent_.Step(state, safety, 1000);
+            step = reflexAgent_.Step(state, safety, 1000, hasActiveGoal ? &activeGoal : nullptr);
         }
 
         std::ostringstream json;
@@ -2609,10 +3147,17 @@ std::string IntentApiServer::HandleRequest(const std::string& request) {
         temporalStateEngine_.Record(state);
 
         const ReflexSafetyPolicy safety = BuildReflexSafetyPolicy(PermissionPolicyStore::Get());
+        ReflexGoal activeGoal;
+        bool hasActiveGoal = false;
+        {
+            std::lock_guard<std::mutex> goalLock(ureRuntimeMutex_);
+            activeGoal = ureRuntime_.goal;
+            hasActiveGoal = ureRuntime_.goal.active;
+        }
         ReflexStepResult step;
         {
             std::lock_guard<std::mutex> lock(reflexMutex_);
-            step = reflexAgent_.Step(state, safety, 1000);
+            step = reflexAgent_.Step(state, safety, 1000, hasActiveGoal ? &activeGoal : nullptr);
         }
 
         std::ostringstream json;
@@ -2634,10 +3179,17 @@ std::string IntentApiServer::HandleRequest(const std::string& request) {
         temporalStateEngine_.Record(state);
 
         const ReflexSafetyPolicy safety = BuildReflexSafetyPolicy(PermissionPolicyStore::Get());
+        ReflexGoal activeGoal;
+        bool hasActiveGoal = false;
+        {
+            std::lock_guard<std::mutex> goalLock(ureRuntimeMutex_);
+            activeGoal = ureRuntime_.goal;
+            hasActiveGoal = ureRuntime_.goal.active;
+        }
         ReflexStepResult step;
         {
             std::lock_guard<std::mutex> lock(reflexMutex_);
-            step = reflexAgent_.Step(state, safety, 1000);
+            step = reflexAgent_.Step(state, safety, 1000, hasActiveGoal ? &activeGoal : nullptr);
         }
 
         std::ostringstream json;
@@ -2656,7 +3208,14 @@ std::string IntentApiServer::HandleRequest(const std::string& request) {
             std::lock_guard<std::mutex> lock(reflexMutex_);
             metrics = reflexAgent_.Metrics();
         }
-        return BuildResponse(200, "OK", SerializeReflexMetricsJson(metrics));
+
+        std::ostringstream json;
+        json << "{";
+        json << "\"metrics\":" << SerializeReflexMetricsJson(metrics) << ",";
+        json << "\"telemetry\":" << telemetry_.SerializeReflexJson(256) << ",";
+        json << "\"runtime\":" << SerializeUreStatusJson();
+        json << "}";
+        return BuildResponse(200, "OK", json.str());
     }
 
     if (method == "GET" && path == "/ure/experience") {
@@ -2704,10 +3263,18 @@ std::string IntentApiServer::HandleRequest(const std::string& request) {
         const PermissionPolicy policy = PermissionPolicyStore::Get();
         const ReflexSafetyPolicy safety = BuildReflexSafetyPolicy(policy);
 
+        ReflexGoal activeGoal;
+        bool hasActiveGoal = false;
+        {
+            std::lock_guard<std::mutex> lock(ureRuntimeMutex_);
+            activeGoal = ureRuntime_.goal;
+            hasActiveGoal = ureRuntime_.goal.active;
+        }
+
         ReflexStepResult step;
         {
             std::lock_guard<std::mutex> lock(reflexMutex_);
-            step = reflexAgent_.Step(state, safety, decisionBudgetUs);
+            step = reflexAgent_.Step(state, safety, decisionBudgetUs, hasActiveGoal ? &activeGoal : nullptr);
         }
 
         bool executed = false;

@@ -178,6 +178,45 @@ int main() {
         }
 
         {
+            const std::string response = api.HandleRequestForTesting(
+                BuildHttpRequest("POST", "/ure/start", "{\"execute\":\"false\",\"priority\":\"auto\"}"));
+            AssertTrue(HasStatus(response, 200), "POST /ure/start should return 200");
+            AssertTrue(response.find("\"status\"") != std::string::npos, "URE start response should include runtime status");
+        }
+
+        {
+            const std::string response = api.HandleRequestForTesting(BuildHttpRequest("GET", "/ure/status"));
+            AssertTrue(HasStatus(response, 200), "GET /ure/status should return 200");
+            AssertTrue(response.find("\"active\":true") != std::string::npos, "URE status should report active runtime");
+        }
+
+        {
+            const std::string response = api.HandleRequestForTesting(
+                BuildHttpRequest("POST", "/ure/goal", "{\"goal\":\"click save\",\"target\":\"Save\",\"preferred_actions\":\"activate\"}"));
+            AssertTrue(HasStatus(response, 200), "POST /ure/goal should return 200");
+            AssertTrue(response.find("\"goal\"") != std::string::npos, "URE goal response should include goal payload");
+            AssertTrue(response.find("\"goal_version\"") != std::string::npos, "URE goal response should include goal version");
+        }
+
+        {
+            const std::string response = api.HandleRequestForTesting(BuildHttpRequest("GET", "/ure/goal"));
+            AssertTrue(HasStatus(response, 200), "GET /ure/goal should return 200");
+            AssertTrue(response.find("\"goal\":\"click save\"") != std::string::npos, "URE goal should persist configured goal");
+        }
+
+        {
+            const std::string response = api.HandleRequestForTesting(BuildHttpRequest("GET", "/telemetry/reflex"));
+            AssertTrue(HasStatus(response, 200), "GET /telemetry/reflex should return 200");
+            AssertTrue(response.find("\"sample_count\"") != std::string::npos, "Reflex telemetry route should include sample count");
+        }
+
+        {
+            const std::string response = api.HandleRequestForTesting(BuildHttpRequest("POST", "/ure/stop", "{}"));
+            AssertTrue(HasStatus(response, 200), "POST /ure/stop should return 200");
+            AssertTrue(response.find("\"stopped\":true") != std::string::npos, "URE stop response should include stopped=true");
+        }
+
+        {
             const std::string response = api.HandleRequestForTesting(BuildHttpRequest("GET", "/ure/experience"));
             AssertTrue(HasStatus(response, 200), "GET /ure/experience should return 200");
             AssertTrue(response.find("[") != std::string::npos, "URE experience should return a JSON array");

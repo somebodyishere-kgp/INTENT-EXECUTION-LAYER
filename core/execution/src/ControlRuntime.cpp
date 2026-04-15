@@ -35,6 +35,48 @@ int ClampDecisionBudgetMs(int value) {
     return value;
 }
 
+std::string Narrow(const std::wstring& value) {
+    if (value.empty()) {
+        return "";
+    }
+
+    const int requiredBytes = WideCharToMultiByte(CP_UTF8, 0, value.c_str(), -1, nullptr, 0, nullptr, nullptr);
+    if (requiredBytes <= 1) {
+        return "";
+    }
+
+    std::string result(static_cast<std::size_t>(requiredBytes), '\0');
+    WideCharToMultiByte(CP_UTF8, 0, value.c_str(), -1, result.data(), requiredBytes, nullptr, nullptr);
+    result.pop_back();
+    return result;
+}
+
+std::string ToAsciiLower(std::string value) {
+    std::transform(value.begin(), value.end(), value.begin(), [](unsigned char ch) {
+        if (ch >= 'A' && ch <= 'Z') {
+            return static_cast<char>(ch - 'A' + 'a');
+        }
+        return static_cast<char>(ch);
+    });
+    return value;
+}
+
+ControlPriority ParseControlPriorityHint(const Intent& intent) {
+    const auto it = intent.params.values.find("control_priority");
+    if (it == intent.params.values.end()) {
+        return ControlPriority::Low;
+    }
+
+    const std::string value = ToAsciiLower(Narrow(it->second));
+    if (value == "high") {
+        return ControlPriority::High;
+    }
+    if (value == "medium") {
+        return ControlPriority::Medium;
+    }
+    return ControlPriority::Low;
+}
+
 bool IsStateChangeExpected(IntentAction action) {
     switch (action) {
     case IntentAction::Activate:
@@ -363,6 +405,11 @@ void ControlRuntime::SetPredictor(std::shared_ptr<Predictor> predictor) {
     predictor_ = std::move(predictor);
 }
 
+void ControlRuntime::SetExecutionObserver(ExecutionObserver observer) {
+    std::lock_guard<std::mutex> lock(executionObserverMutex_);
+    executionObserver_ = std::move(observer);
+}
+
 bool ControlRuntime::Predict(const Intent& intent, StateSnapshot* predictedState, std::string* diagnostics) const {
     if (predictedState == nullptr) {
         if (diagnostics != nullptr) {
@@ -543,7 +590,8 @@ void ControlRuntime::DecisionLoop() {
             }
             intent.context.cursor = state.cursorPosition;
 
-            if (EnqueueIntent(intent, ControlPriority::Low)) {
+            const ControlPriority enqueuePriority = ParseControlPriorityHint(intent);
+            if (EnqueueIntent(intent, enqueuePriority)) {
                 ++accepted;
             }
         }
@@ -834,6 +882,7 @@ void ControlRuntime::RunLoop() {
                 }
 
                 bool mismatch = false;
+                std::optional<FeedbackDelta> feedbackDelta;
                 if (hasSynchronizedState && hasAfterState) {
                     Feedback feedback;
                     feedback.intent = intent;
@@ -846,6 +895,7 @@ void ControlRuntime::RunLoop() {
                     feedback.timestamp = std::chrono::system_clock::now();
                     feedback.mismatch = result.IsSuccess() && IsLikelyMismatch(intent, feedback.delta, synchronizedState, afterState);
                     mismatch = feedback.mismatch;
+                    feedbackDelta = feedback.delta;
 
                     std::lock_guard<std::mutex> lock(mutex_);
                     feedbackHistory_.push_back(std::move(feedback));
@@ -871,6 +921,15 @@ void ControlRuntime::RunLoop() {
                     std::lock_guard<std::mutex> lock(mutex_);
                     ++intentsExecuted_;
                     lastTraceId_ = result.traceId;
+                }
+
+                ExecutionObserver observer;
+                {
+                    std::lock_guard<std::mutex> lock(executionObserverMutex_);
+                    observer = executionObserver_;
+                }
+                if (observer) {
+                    observer(intent, result, feedbackDelta, mismatch);
                 }
             } else {
                 QueuedIntent queued;

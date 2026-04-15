@@ -29,8 +29,32 @@ public:
     std::string HandleRequestForTesting(const std::string& request);
 
 private:
+    struct UreRuntimeState {
+        bool active{false};
+        bool executeActions{false};
+        bool demoMode{false};
+        bool autoPriority{true};
+        std::int64_t decisionBudgetUs{1000};
+        ControlPriority priority{ControlPriority::Medium};
+        std::uint64_t framesEvaluated{0};
+        std::uint64_t intentsProduced{0};
+        std::uint64_t executionAttempts{0};
+        std::uint64_t executionSuccesses{0};
+        std::uint64_t executionFailures{0};
+        std::uint64_t goalVersion{0};
+        std::string lastTraceId;
+        std::string lastReason;
+        std::int64_t lastDecisionTimeUs{0};
+        std::int64_t lastLoopTimeUs{0};
+        bool lastGoalConditioned{false};
+        std::chrono::system_clock::time_point startedAt{std::chrono::system_clock::now()};
+        std::chrono::system_clock::time_point lastTickAt{std::chrono::system_clock::time_point{}};
+        ReflexGoal goal;
+    };
+
     std::string HandleRequest(const std::string& request);
     ControlRuntime& EnsureControlRuntime();
+    std::string SerializeUreStatusJson() const;
 
     IntentRegistry& registry_;
     ExecutionEngine& executionEngine_;
@@ -47,6 +71,8 @@ private:
     TemporalStateEngine temporalStateEngine_;
     mutable std::mutex reflexMutex_;
     UniversalReflexAgent reflexAgent_;
+    mutable std::mutex ureRuntimeMutex_;
+    UreRuntimeState ureRuntime_;
 };
 
 }  // namespace iee
