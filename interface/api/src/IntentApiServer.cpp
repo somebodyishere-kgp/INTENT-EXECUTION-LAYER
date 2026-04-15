@@ -9,7 +9,11 @@
 #include <cctype>
 #include <charconv>
 #include <cmath>
+#include <filesystem>
+#include <fstream>
 #include <functional>
+#include <future>
+#include <iterator>
 #include <limits>
 #include <map>
 #include <optional>
@@ -1237,6 +1241,349 @@ std::vector<std::string> ParsePreferredActions(const std::string& value) {
     return actions;
 }
 
+bool ExtractJsonValueStart(std::string_view payload, const std::string& key, std::size_t* valueStart) {
+    if (valueStart == nullptr) {
+        return false;
+    }
+
+    const std::string marker = "\"" + key + "\"";
+    const std::size_t keyPos = payload.find(marker);
+    if (keyPos == std::string::npos) {
+        return false;
+    }
+
+    const std::size_t colonPos = payload.find(':', keyPos + marker.size());
+    if (colonPos == std::string::npos) {
+        return false;
+    }
+
+    std::size_t index = colonPos + 1U;
+    SkipWhitespace(payload, &index);
+    if (index >= payload.size()) {
+        return false;
+    }
+
+    *valueStart = index;
+    return true;
+}
+
+bool ExtractJsonStringField(std::string_view payload, const std::string& key, std::string* output) {
+    if (output == nullptr) {
+        return false;
+    }
+
+    std::size_t index = 0;
+    if (!ExtractJsonValueStart(payload, key, &index)) {
+        return false;
+    }
+
+    return ParseJsonString(payload, &index, output);
+}
+
+bool ExtractJsonBoolField(std::string_view payload, const std::string& key, bool* output) {
+    if (output == nullptr) {
+        return false;
+    }
+
+    std::size_t index = 0;
+    if (!ExtractJsonValueStart(payload, key, &index)) {
+        return false;
+    }
+
+    if (payload.compare(index, 4U, "true") == 0) {
+        *output = true;
+        return true;
+    }
+    if (payload.compare(index, 5U, "false") == 0) {
+        *output = false;
+        return true;
+    }
+
+    std::string token;
+    while (index < payload.size()) {
+        const char ch = payload[index];
+        if (ch == ',' || ch == '}' || ch == ']' || ch == ' ' || ch == '\n' || ch == '\r' || ch == '\t') {
+            break;
+        }
+        token.push_back(ch);
+        ++index;
+    }
+
+    return ParseBoolString(token, output);
+}
+
+bool ExtractJsonStringArrayField(std::string_view payload, const std::string& key, std::vector<std::string>* output) {
+    if (output == nullptr) {
+        return false;
+    }
+
+    std::size_t index = 0;
+    if (!ExtractJsonValueStart(payload, key, &index)) {
+        return false;
+    }
+
+    if (index >= payload.size() || payload[index] != '[') {
+        return false;
+    }
+    ++index;
+
+    std::vector<std::string> values;
+    while (index < payload.size()) {
+        SkipWhitespace(payload, &index);
+        if (index >= payload.size()) {
+            return false;
+        }
+
+        if (payload[index] == ']') {
+            ++index;
+            *output = std::move(values);
+            return true;
+        }
+
+        std::string entry;
+        if (!ParseJsonString(payload, &index, &entry)) {
+            return false;
+        }
+        values.push_back(ToAsciiLower(entry));
+
+        SkipWhitespace(payload, &index);
+        if (index < payload.size() && payload[index] == ',') {
+            ++index;
+            continue;
+        }
+    }
+
+    return false;
+}
+
+bool ParseGoalPayload(
+    std::string_view payload,
+    ReflexGoal* goal,
+    bool* clear,
+    std::string* errorMessage) {
+    if (goal == nullptr || clear == nullptr) {
+        if (errorMessage != nullptr) {
+            *errorMessage = "Goal payload output cannot be null";
+        }
+        return false;
+    }
+
+    std::map<std::string, std::string> flatPayload;
+    std::string flatError;
+    if (ParseFlatJsonObject(payload, &flatPayload, &flatError)) {
+        bool clearValue = false;
+        ParseBoolString(ReadPayloadValue(flatPayload, {"clear", "reset"}), &clearValue);
+        *clear = clearValue;
+
+        if (clearValue) {
+            *goal = ReflexGoal{};
+            goal->updatedAtMs = EpochMs(std::chrono::system_clock::now());
+            return true;
+        }
+
+        const std::string goalText = ReadPayloadValue(flatPayload, {"goal", "objective"});
+        if (goalText.empty()) {
+            if (errorMessage != nullptr) {
+                *errorMessage = "Missing required field: goal";
+            }
+            return false;
+        }
+
+        goal->goal = goalText;
+        goal->target = ReadPayloadValue(flatPayload, {"target", "target_hint"});
+        goal->domain = ReadPayloadValue(flatPayload, {"domain"});
+        goal->preferredActions = ParsePreferredActions(
+            ReadPayloadValue(flatPayload, {"preferred_actions", "preferredActions", "actions"}));
+        goal->active = true;
+        ParseBoolString(ReadPayloadValue(flatPayload, {"active"}), &goal->active);
+        goal->updatedAtMs = EpochMs(std::chrono::system_clock::now());
+        return true;
+    }
+
+    bool clearValue = false;
+    const bool hasClear = ExtractJsonBoolField(payload, "clear", &clearValue) ||
+        ExtractJsonBoolField(payload, "reset", &clearValue);
+    *clear = hasClear && clearValue;
+
+    if (*clear) {
+        *goal = ReflexGoal{};
+        goal->updatedAtMs = EpochMs(std::chrono::system_clock::now());
+        return true;
+    }
+
+    std::string goalText;
+    if (!ExtractJsonStringField(payload, "goal", &goalText) &&
+        !ExtractJsonStringField(payload, "objective", &goalText)) {
+        if (errorMessage != nullptr) {
+            *errorMessage = "Missing required field: goal";
+        }
+        return false;
+    }
+
+    std::string target;
+    ExtractJsonStringField(payload, "target", &target);
+    if (target.empty()) {
+        ExtractJsonStringField(payload, "target_hint", &target);
+    }
+
+    std::string domain;
+    ExtractJsonStringField(payload, "domain", &domain);
+
+    std::vector<std::string> preferredActions;
+    if (!ExtractJsonStringArrayField(payload, "preferred_actions", &preferredActions) &&
+        !ExtractJsonStringArrayField(payload, "actions", &preferredActions) &&
+        !ExtractJsonStringArrayField(payload, "preferredActions", &preferredActions)) {
+        std::string preferredActionsRaw;
+        if (ExtractJsonStringField(payload, "preferred_actions", &preferredActionsRaw) ||
+            ExtractJsonStringField(payload, "actions", &preferredActionsRaw) ||
+            ExtractJsonStringField(payload, "preferredActions", &preferredActionsRaw)) {
+            preferredActions = ParsePreferredActions(preferredActionsRaw);
+        }
+    }
+
+    bool active = true;
+    ExtractJsonBoolField(payload, "active", &active);
+
+    goal->goal = goalText;
+    goal->target = target;
+    goal->domain = domain;
+    goal->preferredActions = std::move(preferredActions);
+    goal->active = active;
+    goal->updatedAtMs = EpochMs(std::chrono::system_clock::now());
+    return true;
+}
+
+std::filesystem::path UrePersistenceDirectory() {
+    return std::filesystem::path("artifacts") / "reflex";
+}
+
+std::filesystem::path UreGoalStatePath() {
+    return UrePersistenceDirectory() / "goal_state_v3_2.json";
+}
+
+std::filesystem::path UreExperienceStatePath() {
+    return UrePersistenceDirectory() / "experience_state_v3_2.tsv";
+}
+
+std::string SanitizePersistenceField(std::string value) {
+    std::replace(value.begin(), value.end(), '\t', ' ');
+    std::replace(value.begin(), value.end(), '\r', ' ');
+    std::replace(value.begin(), value.end(), '\n', ' ');
+    return value;
+}
+
+std::vector<std::string> SplitByTab(const std::string& value) {
+    std::vector<std::string> fields;
+    std::string token;
+    for (const char ch : value) {
+        if (ch == '\t') {
+            fields.push_back(token);
+            token.clear();
+            continue;
+        }
+        token.push_back(ch);
+    }
+    fields.push_back(token);
+    return fields;
+}
+
+std::string SerializeExperienceEntryLine(const ExperienceEntry& entry) {
+    std::ostringstream stream;
+    stream << entry.timestampMs << '\t'
+           << entry.state.signature << '\t'
+           << entry.state.objects << '\t'
+           << entry.state.relationships << '\t'
+           << SanitizePersistenceField(entry.action.objectId) << '\t'
+           << SanitizePersistenceField(entry.action.objectType) << '\t'
+           << SanitizePersistenceField(entry.action.action) << '\t'
+           << SanitizePersistenceField(entry.action.targetLabel) << '\t'
+           << SanitizePersistenceField(entry.action.reason) << '\t'
+           << entry.action.priority << '\t'
+           << (entry.action.executable ? 1 : 0) << '\t'
+           << (entry.action.exploratory ? 1 : 0) << '\t'
+           << entry.reward;
+    return stream.str();
+}
+
+bool ParseBoolInt(const std::string& value) {
+    return value == "1" || ToAsciiLower(value) == "true";
+}
+
+bool ParseFloat(const std::string& value, float* output) {
+    if (output == nullptr) {
+        return false;
+    }
+
+    std::istringstream stream(value);
+    float parsed = 0.0F;
+    stream >> parsed;
+    if (stream.fail()) {
+        return false;
+    }
+    *output = parsed;
+    return true;
+}
+
+bool ParseExperienceEntryLine(const std::string& line, ExperienceEntry* entry) {
+    if (entry == nullptr || line.empty()) {
+        return false;
+    }
+
+    const std::vector<std::string> fields = SplitByTab(line);
+    if (fields.size() < 13U) {
+        return false;
+    }
+
+    ExperienceEntry parsed;
+
+    const auto parseI64 = [](const std::string& value, std::int64_t* output) {
+        std::int64_t local = 0;
+        const auto [ptr, error] = std::from_chars(value.data(), value.data() + value.size(), local);
+        if (error != std::errc() || ptr != value.data() + value.size()) {
+            return false;
+        }
+        *output = local;
+        return true;
+    };
+
+    const auto parseU64 = [](const std::string& value, std::uint64_t* output) {
+        std::uint64_t local = 0;
+        const auto [ptr, error] = std::from_chars(value.data(), value.data() + value.size(), local);
+        if (error != std::errc() || ptr != value.data() + value.size()) {
+            return false;
+        }
+        *output = local;
+        return true;
+    };
+
+    const auto parseSize = [](const std::string& value, std::size_t* output) {
+        std::uint64_t local = 0;
+        const auto [ptr, error] = std::from_chars(value.data(), value.data() + value.size(), local);
+        if (error != std::errc() || ptr != value.data() + value.size()) {
+            return false;
+        }
+        *output = static_cast<std::size_t>(local);
+        return true;
+    };
+
+    parseI64(fields[0], &parsed.timestampMs);
+    parseU64(fields[1], &parsed.state.signature);
+    parseSize(fields[2], &parsed.state.objects);
+    parseSize(fields[3], &parsed.state.relationships);
+    parsed.action.objectId = fields[4];
+    parsed.action.objectType = fields[5];
+    parsed.action.action = fields[6];
+    parsed.action.targetLabel = fields[7];
+    parsed.action.reason = fields[8];
+    ParseFloat(fields[9], &parsed.action.priority);
+    parsed.action.executable = ParseBoolInt(fields[10]);
+    parsed.action.exploratory = ParseBoolInt(fields[11]);
+    ParseFloat(fields[12], &parsed.reward);
+
+    *entry = std::move(parsed);
+    return true;
+}
+
 bool IsGoalConditionedReason(const std::string& reason) {
     return reason.rfind("goal_conditioned_", 0) == 0;
 }
@@ -1256,9 +1603,13 @@ ControlPriority DecidePriorityForReflex(const ReflexDecision& decision, bool aut
 }
 
 Intent BuildIntentFromReflexDecision(const ReflexDecision& decision, std::uint64_t frame, ControlPriority priority) {
+    Action action;
+    action.name = decision.reason.empty() ? "reflex_action" : decision.reason;
+    action.intentAction = decision.action;
+
     Intent intent;
-    intent.id = "ure-runtime-" + std::to_string(frame) + "-" + decision.objectId;
-    intent.action = IntentActionFromString(decision.action);
+    intent.id = "ure-runtime-" + std::to_string(frame) + "-" + decision.objectId + "-meta";
+    intent.action = IntentActionFromString(action.intentAction);
     intent.name = ToString(intent.action);
     intent.target.type = TargetType::UiElement;
     intent.target.label = Wide(decision.targetLabel.empty() ? decision.objectId : decision.targetLabel);
@@ -1266,12 +1617,151 @@ Intent BuildIntentFromReflexDecision(const ReflexDecision& decision, std::uint64
     intent.params.values["ure_object_id"] = Wide(decision.objectId);
     intent.params.values["ure_reason"] = Wide(decision.reason);
     intent.params.values["ure_exploratory"] = decision.exploratory ? L"true" : L"false";
+    intent.params.values["ure_action_name"] = Wide(action.name);
+    intent.params.values["ure_bundle_source"] = L"meta_policy";
     intent.source = "ure-runtime";
     intent.confidence = std::clamp(decision.priority, 0.0F, 1.0F);
     intent.constraints.timeoutMs = 12;
     intent.constraints.maxRetries = 0;
     intent.constraints.allowFallback = false;
     return intent;
+}
+
+Intent BuildIntentFromDiscreteAction(
+    const Action& action,
+    std::uint64_t frame,
+    std::size_t index,
+    ControlPriority priority,
+    const std::string& objectId,
+    const std::string& targetLabel,
+    const std::string& reason,
+    const std::string& source) {
+    Intent intent;
+    intent.id = "ure-runtime-" + std::to_string(frame) + "-" + std::to_string(index) + "-" + action.name;
+    intent.action = IntentActionFromString(action.intentAction);
+    intent.name = ToString(intent.action);
+    intent.target.type = TargetType::UiElement;
+    intent.target.label = Wide(targetLabel.empty() ? objectId : targetLabel);
+    intent.params.values["control_priority"] = Wide(ToString(priority));
+    intent.params.values["ure_object_id"] = Wide(objectId);
+    intent.params.values["ure_reason"] = Wide(reason);
+    intent.params.values["ure_exploratory"] = L"false";
+    intent.params.values["ure_action_name"] = Wide(action.name);
+    intent.params.values["ure_bundle_source"] = Wide(source);
+    intent.source = "ure-runtime";
+    intent.confidence = 0.9F;
+    intent.constraints.timeoutMs = 12;
+    intent.constraints.maxRetries = 0;
+    intent.constraints.allowFallback = false;
+    return intent;
+}
+
+Intent BuildIntentFromContinuousAction(
+    const ContinuousAction& action,
+    std::uint64_t frame,
+    ControlPriority priority,
+    const std::string& objectId,
+    const std::string& reason) {
+    Intent intent;
+    intent.id = "ure-runtime-" + std::to_string(frame) + "-continuous";
+    intent.action = IntentAction::Move;
+    intent.name = ToString(intent.action);
+    intent.target.type = TargetType::UiElement;
+    intent.target.label = Wide(objectId);
+    intent.params.values["control_priority"] = Wide(ToString(priority));
+    intent.params.values["ure_object_id"] = Wide(objectId);
+    intent.params.values["ure_reason"] = Wide(reason);
+    intent.params.values["ure_exploratory"] = L"false";
+    intent.params.values["ure_bundle_source"] = L"continuous_controller";
+    intent.params.values["move_x"] = Wide(std::to_string(action.move_x));
+    intent.params.values["move_y"] = Wide(std::to_string(action.move_y));
+    intent.params.values["aim_dx"] = Wide(std::to_string(action.aim_dx));
+    intent.params.values["aim_dy"] = Wide(std::to_string(action.aim_dy));
+    intent.params.values["look_dx"] = Wide(std::to_string(action.look_dx));
+    intent.params.values["look_dy"] = Wide(std::to_string(action.look_dy));
+    intent.params.values["fire"] = action.fire ? L"true" : L"false";
+    intent.params.values["interact"] = action.interact ? L"true" : L"false";
+    intent.source = "ure-runtime";
+    intent.confidence = 0.80F;
+    intent.constraints.timeoutMs = 12;
+    intent.constraints.maxRetries = 0;
+    intent.constraints.allowFallback = false;
+    return intent;
+}
+
+bool HasMeaningfulContinuous(const ContinuousAction& action) {
+    return std::abs(action.move_x) > 0.05F ||
+        std::abs(action.move_y) > 0.05F ||
+        std::abs(action.aim_dx) > 0.05F ||
+        std::abs(action.aim_dy) > 0.05F ||
+        std::abs(action.look_dx) > 0.05F ||
+        std::abs(action.look_dy) > 0.05F ||
+        action.fire ||
+        action.interact;
+}
+
+ReflexBundle BuildBundleFromReflexDecision(const ReflexDecision& decision) {
+    ReflexBundle bundle;
+    bundle.source = "meta_policy";
+    bundle.target_object_id = decision.objectId;
+    bundle.priority = decision.priority;
+
+    if (!decision.action.empty()) {
+        Action action;
+        action.name = decision.reason.empty() ? "reflex_action" : decision.reason;
+        action.intentAction = decision.action;
+        bundle.discrete_actions.push_back(std::move(action));
+    }
+
+    ContinuousAction continuous;
+    continuous.look_dx = std::clamp((decision.priority - 0.5F) * 0.5F, -1.0F, 1.0F);
+    if (decision.exploratory) {
+        continuous.look_dy = 0.12F;
+    }
+    bundle.continuous_actions.push_back(continuous);
+    return bundle;
+}
+
+std::vector<ReflexBundle> BuildSpecialistBundles(
+    const WorldModel& model,
+    const AttentionMap& attention,
+    const ReflexGoal* goal,
+    const ReflexSafetyPolicy& safety,
+    const MovementAgent& movementAgent,
+    const AimAgent& aimAgent,
+    const InteractionAgent& interactionAgent,
+    const StrategyAgent& strategyAgent) {
+    auto movementTask = std::async(std::launch::async, [&]() {
+        return movementAgent.Propose(model, attention, goal, safety);
+    });
+
+    auto aimTask = std::async(std::launch::async, [&]() {
+        return aimAgent.Propose(model, attention, goal, safety);
+    });
+
+    auto interactionTask = std::async(std::launch::async, [&]() {
+        return interactionAgent.Propose(model, attention, goal, safety);
+    });
+
+    auto strategyTask = std::async(std::launch::async, [&]() {
+        return strategyAgent.Propose(model, attention, goal, safety);
+    });
+
+    std::vector<ReflexBundle> bundles;
+    bundles.reserve(4U);
+
+    auto appendIfNonEmpty = [&bundles](ReflexBundle bundle) {
+        if (!bundle.discrete_actions.empty() || !bundle.continuous_actions.empty()) {
+            bundles.push_back(std::move(bundle));
+        }
+    };
+
+    appendIfNonEmpty(movementTask.get());
+    appendIfNonEmpty(aimTask.get());
+    appendIfNonEmpty(interactionTask.get());
+    appendIfNonEmpty(strategyTask.get());
+
+    return bundles;
 }
 
 class UreDecisionProvider final : public DecisionProvider {
@@ -1286,17 +1776,26 @@ public:
     };
 
     using RuntimeSnapshotFn = std::function<RuntimeSnapshot()>;
-    using StepObserverFn = std::function<void(const ReflexStepResult&, bool intentProduced, bool goalConditioned)>;
+        using StepObserverFn = std::function<void(
+                const ReflexStepResult&,
+                const AttentionMap&,
+                const std::vector<PredictedState>&,
+                const std::vector<ReflexBundle>&,
+                const CoordinatedOutput&,
+                bool intentProduced,
+                bool goalConditioned)>;
 
     UreDecisionProvider(
         UniversalReflexAgent* reflexAgent,
         std::mutex* reflexMutex,
         Telemetry* telemetry,
+                SkillMemoryStore* skillMemoryStore,
         RuntimeSnapshotFn runtimeSnapshotFn,
         StepObserverFn stepObserverFn)
         : reflexAgent_(reflexAgent),
           reflexMutex_(reflexMutex),
           telemetry_(telemetry),
+                    skillMemoryStore_(skillMemoryStore),
           runtimeSnapshotFn_(std::move(runtimeSnapshotFn)),
           stepObserverFn_(std::move(stepObserverFn)) {}
 
@@ -1333,32 +1832,89 @@ public:
                 runtime.goal.active ? &runtime.goal : nullptr);
         }
 
+        const AttentionMap attention = BuildAttentionMap(step.worldModel, 5U);
+        const std::vector<PredictedState> predictions = BuildPredictedStates(step.worldModel, previousCenters_, 3U);
+        previousCenters_ = BuildObjectCenters(step.worldModel);
+
+        std::vector<ReflexBundle> bundles = BuildSpecialistBundles(
+            step.worldModel,
+            attention,
+            runtime.goal.active ? &runtime.goal : nullptr,
+            safety,
+            movementAgent_,
+            aimAgent_,
+            interactionAgent_,
+            strategyAgent_);
+        bundles.push_back(BuildBundleFromReflexDecision(step.decision));
+
+        const std::vector<ReflexBundle> plannedBundles = microPlanner_.refine(step.worldModel, runtime.goal, bundles);
+        CoordinatedOutput coordinated = coordinator_.resolve(plannedBundles);
+        coordinated.continuous = continuousController_.Apply(coordinated.continuous);
+
         const bool goalConditioned = IsGoalConditionedReason(step.decision.reason);
         bool intentProduced = false;
         std::vector<Intent> intents;
+        std::string primaryObjectId = step.decision.objectId;
+        std::string primaryTargetLabel = step.decision.targetLabel;
+        std::string primarySource = "meta_policy";
 
-        if (runtime.executeActions && step.decision.executable && !step.decision.action.empty()) {
-            IntentAction action = IntentActionFromString(step.decision.action);
-            if (action != IntentAction::Unknown) {
-                const ControlPriority priority = DecidePriorityForReflex(
-                    step.decision,
-                    runtime.autoPriority,
-                    runtime.configuredPriority);
-
-                Intent intent = BuildIntentFromReflexDecision(step.decision, state.sequence, priority);
-                intentProduced = true;
-                intents.push_back(std::move(intent));
-
-                if (diagnostics != nullptr) {
-                    *diagnostics = "ure decision produced intent";
+        for (const ReflexBundle& bundle : plannedBundles) {
+            if (!bundle.target_object_id.empty()) {
+                primaryObjectId = bundle.target_object_id;
+                if (primaryTargetLabel.empty()) {
+                    primaryTargetLabel = bundle.target_object_id;
                 }
-            } else if (diagnostics != nullptr) {
-                *diagnostics = "ure decision mapped to unsupported action";
+                primarySource = bundle.source;
+                break;
+            }
+        }
+
+        if (runtime.executeActions) {
+            const ControlPriority priority = DecidePriorityForReflex(
+                step.decision,
+                runtime.autoPriority,
+                runtime.configuredPriority);
+
+            if (HasMeaningfulContinuous(coordinated.continuous)) {
+                intents.push_back(BuildIntentFromContinuousAction(
+                    coordinated.continuous,
+                    state.sequence,
+                    priority,
+                    primaryObjectId,
+                    step.decision.reason));
+            }
+
+            for (std::size_t index = 0; index < coordinated.discrete.size(); ++index) {
+                const Action& action = coordinated.discrete[index];
+                const IntentAction mappedAction = IntentActionFromString(action.intentAction);
+                if (mappedAction == IntentAction::Unknown) {
+                    continue;
+                }
+
+                Intent intent = BuildIntentFromDiscreteAction(
+                    action,
+                    state.sequence,
+                    index,
+                    priority,
+                    primaryObjectId,
+                    primaryTargetLabel,
+                    step.decision.reason,
+                    primarySource);
+                intent.action = mappedAction;
+                intent.name = ToString(intent.action);
+                intent.confidence = std::clamp(step.decision.priority, 0.0F, 1.0F);
+                intents.push_back(std::move(intent));
+            }
+
+            intentProduced = !intents.empty();
+
+            if (diagnostics != nullptr) {
+                *diagnostics = intentProduced
+                    ? "ure coordinated bundles produced intents"
+                    : "ure coordinated output not executable";
             }
         } else if (diagnostics != nullptr) {
-            *diagnostics = runtime.executeActions
-                ? "ure decision not executable"
-                : "ure runtime execute_actions disabled";
+            *diagnostics = "ure runtime execute_actions disabled";
         }
 
         ReflexTelemetrySample sample;
@@ -1368,15 +1924,26 @@ public:
         sample.priority = step.decision.priority;
         sample.decisionWithinBudget = step.decisionWithinBudget;
         sample.exploratory = step.decision.exploratory;
-        sample.executable = step.decision.executable;
+        sample.executable = !coordinated.discrete.empty() || HasMeaningfulContinuous(coordinated.continuous);
         sample.intentProduced = intentProduced;
         sample.goalConditioned = goalConditioned;
-        sample.reason = step.decision.reason;
+        sample.reason = "bundles=" + std::to_string(plannedBundles.size()) + "," + step.decision.reason;
         sample.timestamp = std::chrono::system_clock::now();
         telemetry_->LogReflexSample(sample);
 
+        if (skillMemoryStore_ != nullptr && !coordinated.discrete.empty()) {
+            skillMemoryStore_->Record("bundle_" + primarySource, coordinated.discrete, false);
+        }
+
         if (stepObserverFn_ != nullptr) {
-            stepObserverFn_(step, intentProduced, goalConditioned);
+            stepObserverFn_(
+                step,
+                attention,
+                predictions,
+                plannedBundles,
+                coordinated,
+                intentProduced,
+                goalConditioned);
         }
 
         return intents;
@@ -1386,8 +1953,17 @@ private:
     UniversalReflexAgent* reflexAgent_{nullptr};
     std::mutex* reflexMutex_{nullptr};
     Telemetry* telemetry_{nullptr};
+    SkillMemoryStore* skillMemoryStore_{nullptr};
     RuntimeSnapshotFn runtimeSnapshotFn_;
     StepObserverFn stepObserverFn_;
+    MovementAgent movementAgent_;
+    AimAgent aimAgent_;
+    InteractionAgent interactionAgent_;
+    StrategyAgent strategyAgent_;
+    MicroPlanner microPlanner_;
+    ActionCoordinator coordinator_;
+    ContinuousController continuousController_;
+    std::unordered_map<std::string, Vec2> previousCenters_;
 };
 
 bool CaptureEnvironmentState(
@@ -1507,7 +2083,10 @@ IntentApiServer::IntentApiServer(IntentRegistry& registry, ExecutionEngine& exec
       telemetry_(telemetry),
       streamEnvironmentAdapter_(std::make_shared<RegistryEnvironmentAdapter>(registry_)),
       predictor_(std::make_shared<HeuristicPredictor>()),
-      startedAt_(std::chrono::steady_clock::now()) {}
+            startedAt_(std::chrono::steady_clock::now()),
+            skillMemoryStore_(SkillMemoryStore()) {
+        RestoreUrePersistentState();
+}
 
 void IntentApiServer::SetPredictor(std::shared_ptr<Predictor> predictor) {
     std::shared_ptr<Predictor> activePredictor;
@@ -1762,6 +2341,99 @@ ControlRuntime& IntentApiServer::EnsureControlRuntime() {
     return *controlRuntime_;
 }
 
+bool IntentApiServer::RestoreUrePersistentState() {
+    bool restored = true;
+
+    if (!skillMemoryStore_.Load()) {
+        restored = false;
+    }
+
+    {
+        std::error_code error;
+        const std::filesystem::path goalPath = UreGoalStatePath();
+        if (std::filesystem::exists(goalPath, error)) {
+            std::ifstream stream(goalPath);
+            if (stream.good()) {
+                std::string payload((std::istreambuf_iterator<char>(stream)), std::istreambuf_iterator<char>());
+                ReflexGoal goal;
+                bool clear = false;
+                std::string parseError;
+                if (ParseGoalPayload(payload, &goal, &clear, &parseError)) {
+                    std::lock_guard<std::mutex> lock(ureRuntimeMutex_);
+                    ureRuntime_.goal = clear ? ReflexGoal{} : goal;
+                    ureRuntime_.goalVersion = ureRuntime_.goal.active || !ureRuntime_.goal.goal.empty() ? 1U : 0U;
+                } else {
+                    restored = false;
+                }
+            } else {
+                restored = false;
+            }
+        }
+    }
+
+    {
+        std::error_code error;
+        const std::filesystem::path experiencePath = UreExperienceStatePath();
+        if (std::filesystem::exists(experiencePath, error)) {
+            std::ifstream stream(experiencePath);
+            if (stream.good()) {
+                std::vector<ExperienceEntry> entries;
+                std::string line;
+                while (std::getline(stream, line)) {
+                    ExperienceEntry entry;
+                    if (ParseExperienceEntryLine(line, &entry)) {
+                        entries.push_back(std::move(entry));
+                    }
+                }
+
+                if (!entries.empty()) {
+                    std::lock_guard<std::mutex> lock(reflexMutex_);
+                    reflexAgent_.RestoreExperience(entries);
+                }
+            } else {
+                restored = false;
+            }
+        }
+    }
+
+    return restored;
+}
+
+void IntentApiServer::PersistUrePersistentState() {
+    ReflexGoal goal;
+    {
+        std::lock_guard<std::mutex> lock(ureRuntimeMutex_);
+        goal = ureRuntime_.goal;
+    }
+
+    std::vector<ExperienceEntry> experience;
+    {
+        std::lock_guard<std::mutex> lock(reflexMutex_);
+        experience = reflexAgent_.Experience(512U);
+    }
+
+    std::error_code directoryError;
+    std::filesystem::create_directories(UrePersistenceDirectory(), directoryError);
+
+    {
+        std::ofstream stream(UreGoalStatePath(), std::ios::trunc);
+        if (stream.good()) {
+            stream << SerializeReflexGoalJson(goal);
+        }
+    }
+
+    {
+        std::ofstream stream(UreExperienceStatePath(), std::ios::trunc);
+        if (stream.good()) {
+            for (const ExperienceEntry& entry : experience) {
+                stream << SerializeExperienceEntryLine(entry) << "\n";
+            }
+        }
+    }
+
+    skillMemoryStore_.Save();
+}
+
 std::string IntentApiServer::SerializeUreStatusJson() const {
     UreRuntimeState runtime;
     {
@@ -1776,6 +2448,7 @@ std::string IntentApiServer::SerializeUreStatusJson() const {
     }
 
     const bool controlActive = controlRuntime_ != nullptr && controlRuntime_->Status().active;
+    const std::vector<Skill> skills = skillMemoryStore_.Skills(8U);
 
     std::ostringstream json;
     json << "{";
@@ -1791,6 +2464,8 @@ std::string IntentApiServer::SerializeUreStatusJson() const {
     json << "\"execution_attempts\":" << runtime.executionAttempts << ",";
     json << "\"execution_successes\":" << runtime.executionSuccesses << ",";
     json << "\"execution_failures\":" << runtime.executionFailures << ",";
+    json << "\"bundle_frames\":" << runtime.bundleFrames << ",";
+    json << "\"coordinated_actions\":" << runtime.coordinatedActions << ",";
     json << "\"goal_version\":" << runtime.goalVersion << ",";
     json << "\"last_reason\":\"" << EscapeJson(runtime.lastReason) << "\",";
     json << "\"last_trace_id\":\"" << EscapeJson(runtime.lastTraceId) << "\",";
@@ -1804,6 +2479,11 @@ std::string IntentApiServer::SerializeUreStatusJson() const {
         json << "\"last_tick_ms\":0,";
     }
     json << "\"goal\":" << SerializeReflexGoalJson(runtime.goal) << ",";
+    json << "\"attention\":" << SerializeAttentionMapJson(runtime.attention) << ",";
+    json << "\"prediction\":" << SerializePredictedStatesJson(runtime.predictions) << ",";
+    json << "\"bundles\":" << SerializeReflexBundlesJson(runtime.bundles) << ",";
+    json << "\"coordinated_output\":" << SerializeCoordinatedOutputJson(runtime.coordinatedOutput) << ",";
+    json << "\"skills\":" << SerializeSkillsJson(skills) << ",";
     json << "\"metrics\":" << SerializeReflexMetricsJson(metrics) << ",";
     json << "\"telemetry\":" << telemetry_.SerializeReflexJson(256);
     if (controlRuntime_ != nullptr) {
@@ -2573,6 +3253,8 @@ std::string IntentApiServer::HandleRequest(const std::string& request) {
             ureRuntime_.executeActions = false;
         }
 
+        PersistUrePersistentState();
+
         const ControlRuntimeSummary summary = controlRuntime_->Stop();
         std::ostringstream json;
         json << "{";
@@ -2930,12 +3612,18 @@ std::string IntentApiServer::HandleRequest(const std::string& request) {
                 ureRuntime_.executionAttempts = 0;
                 ureRuntime_.executionSuccesses = 0;
                 ureRuntime_.executionFailures = 0;
+                ureRuntime_.bundleFrames = 0;
+                ureRuntime_.coordinatedActions = 0;
                 ureRuntime_.lastTraceId.clear();
                 ureRuntime_.lastReason.clear();
                 ureRuntime_.lastDecisionTimeUs = 0;
                 ureRuntime_.lastLoopTimeUs = 0;
                 ureRuntime_.lastGoalConditioned = false;
                 ureRuntime_.lastTickAt = std::chrono::system_clock::time_point{};
+                ureRuntime_.attention = AttentionMap{};
+                ureRuntime_.predictions.clear();
+                ureRuntime_.bundles.clear();
+                ureRuntime_.coordinatedOutput = CoordinatedOutput{};
             }
 
             ureRuntime_.active = true;
@@ -2950,6 +3638,7 @@ std::string IntentApiServer::HandleRequest(const std::string& request) {
             &reflexAgent_,
             &reflexMutex_,
             &telemetry_,
+            &skillMemoryStore_,
             [this]() {
                 UreDecisionProvider::RuntimeSnapshot snapshot;
                 std::lock_guard<std::mutex> lock(ureRuntimeMutex_);
@@ -2961,17 +3650,30 @@ std::string IntentApiServer::HandleRequest(const std::string& request) {
                 snapshot.goal = ureRuntime_.goal;
                 return snapshot;
             },
-            [this](const ReflexStepResult& step, bool intentProduced, bool goalConditioned) {
+            [this](
+                const ReflexStepResult& step,
+                const AttentionMap& attention,
+                const std::vector<PredictedState>& predictions,
+                const std::vector<ReflexBundle>& bundles,
+                const CoordinatedOutput& coordinated,
+                bool intentProduced,
+                bool goalConditioned) {
                 std::lock_guard<std::mutex> lock(ureRuntimeMutex_);
                 ++ureRuntime_.framesEvaluated;
+                ++ureRuntime_.bundleFrames;
                 if (intentProduced) {
                     ++ureRuntime_.intentsProduced;
                 }
+                ureRuntime_.coordinatedActions += static_cast<std::uint64_t>(coordinated.discrete.size());
                 ureRuntime_.lastDecisionTimeUs = step.decisionTimeUs;
                 ureRuntime_.lastLoopTimeUs = step.loopTimeUs;
                 ureRuntime_.lastReason = step.decision.reason;
                 ureRuntime_.lastGoalConditioned = goalConditioned;
                 ureRuntime_.lastTickAt = std::chrono::system_clock::now();
+                ureRuntime_.attention = attention;
+                ureRuntime_.predictions = predictions;
+                ureRuntime_.bundles = bundles;
+                ureRuntime_.coordinatedOutput = coordinated;
             });
 
         runtime.SetDecisionProvider(provider, static_cast<int>(std::clamp<std::int64_t>(decisionBudgetUs / 1000, 1, 50)));
@@ -2990,6 +3692,19 @@ std::string IntentApiServer::HandleRequest(const std::string& request) {
             decision.targetLabel = Narrow(intent.target.label);
             decision.reason = Narrow(intent.params.Get("ure_reason"));
             decision.exploratory = Narrow(intent.params.Get("ure_exploratory")) == "true";
+
+            Action skillAction;
+            skillAction.intentAction = ToString(intent.action);
+            skillAction.name = Narrow(intent.params.Get("ure_action_name"));
+            if (skillAction.name.empty()) {
+                skillAction.name = skillAction.intentAction;
+            }
+
+            const std::string bundleSource = Narrow(intent.params.Get("ure_bundle_source"));
+            skillMemoryStore_.Record(
+                "bundle_" + (bundleSource.empty() ? std::string("unknown") : bundleSource),
+                {skillAction},
+                result.IsSuccess());
 
             {
                 std::lock_guard<std::mutex> reflexLock(reflexMutex_);
@@ -3033,6 +3748,7 @@ std::string IntentApiServer::HandleRequest(const std::string& request) {
 
         controlRuntime_->SetDecisionProvider(nullptr, 2);
         controlRuntime_->SetExecutionObserver(nullptr);
+        PersistUrePersistentState();
 
         std::ostringstream json;
         json << "{";
@@ -3046,20 +3762,56 @@ std::string IntentApiServer::HandleRequest(const std::string& request) {
         return BuildResponse(200, "OK", SerializeUreStatusJson());
     }
 
+    if (method == "GET" && path == "/ure/bundles") {
+        std::vector<ReflexBundle> bundles;
+        CoordinatedOutput coordinated;
+        std::uint64_t bundleFrames = 0;
+        {
+            std::lock_guard<std::mutex> lock(ureRuntimeMutex_);
+            bundles = ureRuntime_.bundles;
+            coordinated = ureRuntime_.coordinatedOutput;
+            bundleFrames = ureRuntime_.bundleFrames;
+        }
+
+        std::ostringstream json;
+        json << "{";
+        json << "\"bundle_frames\":" << bundleFrames << ",";
+        json << "\"bundles\":" << SerializeReflexBundlesJson(bundles) << ",";
+        json << "\"coordinated_output\":" << SerializeCoordinatedOutputJson(coordinated);
+        json << "}";
+        return BuildResponse(200, "OK", json.str());
+    }
+
+    if (method == "GET" && path == "/ure/attention") {
+        AttentionMap attention;
+        {
+            std::lock_guard<std::mutex> lock(ureRuntimeMutex_);
+            attention = ureRuntime_.attention;
+        }
+        return BuildResponse(200, "OK", SerializeAttentionMapJson(attention));
+    }
+
+    if (method == "GET" && path == "/ure/prediction") {
+        std::vector<PredictedState> predictions;
+        {
+            std::lock_guard<std::mutex> lock(ureRuntimeMutex_);
+            predictions = ureRuntime_.predictions;
+        }
+        return BuildResponse(200, "OK", SerializePredictedStatesJson(predictions));
+    }
+
     if ((method == "POST" && path == "/ure/goal") || (method == "GET" && path == "/ure/goal")) {
         if (method == "GET") {
             std::lock_guard<std::mutex> lock(ureRuntimeMutex_);
             return BuildResponse(200, "OK", SerializeReflexGoalJson(ureRuntime_.goal));
         }
 
-        std::map<std::string, std::string> payload;
-        std::string jsonError;
-        if (!ParseFlatJsonObject(body, &payload, &jsonError)) {
-            return BuildErrorResponse(400, "Bad Request", "invalid_json", jsonError);
-        }
-
+        ReflexGoal parsedGoal;
         bool clear = false;
-        ParseBoolString(ReadPayloadValue(payload, {"clear", "reset"}), &clear);
+        std::string parseError;
+        if (!ParseGoalPayload(body, &parsedGoal, &clear, &parseError)) {
+            return BuildErrorResponse(400, "Bad Request", "invalid_goal_payload", parseError.empty() ? "Invalid goal payload" : parseError);
+        }
 
         ReflexGoal goalSnapshot;
         std::uint64_t goalVersionSnapshot = 0;
@@ -3068,32 +3820,15 @@ std::string IntentApiServer::HandleRequest(const std::string& request) {
             if (clear) {
                 ureRuntime_.goal = ReflexGoal{};
             } else {
-                const std::string goal = ReadPayloadValue(payload, {"goal", "objective"});
-                if (goal.empty()) {
-                    return BuildErrorResponse(400, "Bad Request", "missing_goal", "Missing required field: goal");
-                }
-
-                ureRuntime_.goal.goal = goal;
-                ureRuntime_.goal.target = ReadPayloadValue(payload, {"target", "target_hint"});
-                ureRuntime_.goal.domain = ReadPayloadValue(payload, {"domain"});
-
-                const std::string preferredActionsRaw =
-                    ReadPayloadValue(payload, {"preferred_actions", "preferredActions", "actions"});
-                ureRuntime_.goal.preferredActions = ParsePreferredActions(preferredActionsRaw);
-
-                bool active = true;
-                const std::string activeRaw = ReadPayloadValue(payload, {"active"});
-                if (!activeRaw.empty()) {
-                    ParseBoolString(activeRaw, &active);
-                }
-                ureRuntime_.goal.active = active;
-                ureRuntime_.goal.updatedAtMs = EpochMs(std::chrono::system_clock::now());
+                ureRuntime_.goal = parsedGoal;
             }
 
             ureRuntime_.goalVersion += 1;
             goalSnapshot = ureRuntime_.goal;
             goalVersionSnapshot = ureRuntime_.goalVersion;
         }
+
+        PersistUrePersistentState();
 
         std::ostringstream json;
         json << "{";
@@ -3277,6 +4012,43 @@ std::string IntentApiServer::HandleRequest(const std::string& request) {
             step = reflexAgent_.Step(state, safety, decisionBudgetUs, hasActiveGoal ? &activeGoal : nullptr);
         }
 
+        const AttentionMap attention = BuildAttentionMap(step.worldModel, 5U);
+        const std::vector<PredictedState> predictions = BuildPredictedStates(
+            step.worldModel,
+            std::unordered_map<std::string, Vec2>{},
+            3U);
+
+        MovementAgent movementAgent;
+        AimAgent aimAgent;
+        InteractionAgent interactionAgent;
+        StrategyAgent strategyAgent;
+        MicroPlanner microPlanner;
+        ActionCoordinator coordinator;
+        ContinuousController controller;
+
+        std::vector<ReflexBundle> bundles = BuildSpecialistBundles(
+            step.worldModel,
+            attention,
+            hasActiveGoal ? &activeGoal : nullptr,
+            safety,
+            movementAgent,
+            aimAgent,
+            interactionAgent,
+            strategyAgent);
+        bundles.push_back(BuildBundleFromReflexDecision(step.decision));
+        const std::vector<ReflexBundle> plannedBundles = microPlanner.refine(step.worldModel, activeGoal, bundles);
+
+        CoordinatedOutput coordinatedOutput = coordinator.resolve(plannedBundles);
+        coordinatedOutput.continuous = controller.Apply(coordinatedOutput.continuous);
+
+        {
+            std::lock_guard<std::mutex> lock(ureRuntimeMutex_);
+            ureRuntime_.attention = attention;
+            ureRuntime_.predictions = predictions;
+            ureRuntime_.bundles = plannedBundles;
+            ureRuntime_.coordinatedOutput = coordinatedOutput;
+        }
+
         bool executed = false;
         ActionExecutionResult actionResult;
         bool hasActionResult = false;
@@ -3313,6 +4085,10 @@ std::string IntentApiServer::HandleRequest(const std::string& request) {
             json << "\"scenario\":\"" << EscapeJson(scenario) << "\",";
         }
         json << "\"step\":" << SerializeReflexStepResultJson(step) << ",";
+        json << "\"attention\":" << SerializeAttentionMapJson(attention) << ",";
+        json << "\"prediction\":" << SerializePredictedStatesJson(predictions) << ",";
+        json << "\"bundles\":" << SerializeReflexBundlesJson(plannedBundles) << ",";
+        json << "\"coordinated_output\":" << SerializeCoordinatedOutputJson(coordinatedOutput) << ",";
         json << "\"executed\":" << (executed ? "true" : "false") << ",";
         json << "\"execution_reason\":\"" << EscapeJson(executionReason) << "\",";
         if (hasActionResult) {

@@ -1,96 +1,84 @@
-# IEE v3.1 Status
+# IEE v3.2.1 Status
 
 ## Date
 2026-04-15
 
 ## Current State
-IEE has been upgraded to v3.1 (Phase 14) with continuous Universal Reflex Engine runtime integration layered on top of v3.0.
+IEE has been upgraded to v3.2.1 (Phase 15) with fluid multi-intent continuous intelligence layered over the v3.1 continuous URE runtime.
 
 The runtime now supports:
 
-- universal structural feature extraction from UIG + screen + cursor
-- per-frame world model construction with temporal consistency
-- deterministic affordance inference
-- universal meta-policy reflex decisions
-- bounded exploration for unknown environments
-- experience-memory adaptation for repeated outcomes
-- safety-gated reflex execution via existing action contracts
-- reflex observability via dedicated URE API routes
-- continuous frame-synced reflex decisioning through control runtime
-- goal-conditioned reflex priority/action biasing
-- reflex-to-control priority queue hints
-- real-time execution outcome feedback into reflex adaptation
-- merged reflex telemetry in primary telemetry snapshots
-- continuous runtime control endpoints and CLI control commands
+- specialist reflex bundles generated in parallel
+- conflict-aware action coordination across multiple bundles
+- smoothed continuous control vectors (move/aim/look/fire/interact)
+- micro-planned bundle refinement before execution mapping
+- attention map and short-horizon predicted state surfaces
+- multi-intent mapping from coordinated outputs to runtime queue intents
+- skill memory tracking and disk-backed load/save behavior
+- richer goal payload parsing (flat and array/object forms)
+- additional API diagnostics for bundles, attention, prediction
+- extended CLI diagnostics for coordinated runtime inspection
 
-## Completed v3.1 Work
+## Completed v3.2.1 Work
 
-### Core URE module
-- Added `core/reflex` module with:
-  - `UniversalFeatureExtractor`
-  - `WorldModelBuilder`
-  - `AffordanceEngine`
-  - `MetaPolicyEngine`
-  - `ExplorationEngine`
-  - `UniversalReflexAgent`
-  - `ReflexGoal` for goal-conditioned runtime control
+### Core coordination module
+- Added core/reflex/include/ReflexCoordination.h.
+- Added core/reflex/src/ReflexCoordination.cpp.
+- Added coordination source to iee_core build wiring.
 
-### Build wiring
-- Added `core/reflex/src/UniversalReflexEngine.cpp` to `iee_core`.
-- Added `core/reflex/include` to include directories.
+### Runtime provider and API integration
+- Extended UreDecisionProvider with:
+  - specialist bundle synthesis
+  - micro-planning and conflict-aware coordination
+  - continuous smoothing before execution mapping
+  - runtime snapshot publication of attention/prediction/bundles/coordinated output
+- Added new endpoints:
+  - GET /ure/bundles
+  - GET /ure/attention
+  - GET /ure/prediction
+- Extended /ure/status, /ure/step, and /ure/demo payloads with coordination diagnostics.
 
-### API integration
-- Added/extended routes:
-  - `GET /ure/world-model`
-  - `GET /ure/affordances`
-  - `GET /ure/decision`
-  - `GET /ure/metrics`
-  - `GET /ure/experience`
-  - `GET /ure/status`
-  - `GET /ure/goal`
-  - `GET /telemetry/reflex`
-  - `POST /ure/step`
-  - `POST /ure/demo`
-  - `POST /ure/start`
-  - `POST /ure/stop`
-  - `POST /ure/goal`
-
-### Control runtime integration
-- Added continuous URE decision provider integration into `ControlRuntime`.
-- Added execution observer callback path for real-time reflex outcome recording.
-- Added priority hint propagation from URE to control runtime scheduling.
+### Persistence and goal schema upgrades
+- Added disk persistence for goal, experience, and skills.
+- Added restore path on server startup and persist path on goal/stop lifecycle events.
+- Added richer JSON goal parsing support for array-based preferred_actions and bool fields.
 
 ### CLI integration
-- Added `iee ure live`.
-- Added `iee ure debug`.
-- Added `iee ure demo realtime`.
+- Updated iee ure debug with --bundles and --continuous options.
+- Updated realtime demo sampling to include per-sample /ure/demo payload snapshots.
 
-### Telemetry integration
-- Added reflex telemetry sample stream (`LogReflexSample`).
-- Added merged reflex summary in `TelemetrySnapshot`.
-- Added `SerializeReflexJson` output for runtime/API diagnostics.
+### Testing updates
+- Extended integration_universal_reflex with assertions for bundles/attention/prediction routes and coordinated demo payloads.
+- Extended integration_api_hardening with richer goal payload and new route checks.
 
-### Safety and action execution
-- Reflex step execution is policy-aware (`PermissionPolicyStore`).
-- Optional reflex execution path reuses `ActionExecutor` and existing verification behavior.
+## Mandatory Demo Evidence Summary
 
-### Testing
-- Added `tests/integration_universal_reflex.cpp`.
-- Extended API hardening and URE integration tests for continuous endpoints:
-  - `/ure/start`, `/ure/stop`, `/ure/status`, `/ure/goal`, `/telemetry/reflex`
+Validated realtime demo flows for representative scenarios:
 
-## Verification
+- move aim shoot enemy
+- click drag adjust slider
+- open menu export workflow
 
-- Build: `cmake --build build --config Release`
-- Test: `ctest --test-dir build -C Release --output-on-failure`
+Observed outputs included:
+
+- non-empty bundles from multiple specialists
+- coordinated_output with continuous and discrete action surfaces
+- attention focus_objects snapshots
+- prediction vectors with confidence values
+- runtime counters (bundle_frames, coordinated_actions)
+
+## Verification Baseline
+
+- Build: cmake --build build --config Release
+- Test: ctest --test-dir build -C Release --output-on-failure
 - Result: 20/20 tests passed in Release.
 
 ## Remaining Non-Blocking Gaps
 
-1. Continuous URE currently produces at most one reflex intent per decision pass; multi-intent coordinated reflex bundles are not yet enabled.
-2. Goal payload parser is intentionally flat-string based; array/object goal schema support can be added if needed.
-3. Runtime persistence for reflex experience/goal state is still process-local and not yet disk-backed.
+1. Continuous intent mapping currently routes vector fields through generic intent params; adapter-native analog control bindings can be expanded per platform.
+2. Prediction model is deterministic short-horizon extrapolation; deeper temporal models are intentionally deferred.
+3. Skill memory currently records coarse bundle-level action sequences; richer hierarchical skills remain future work.
 
 ## Release Note Summary
 
-v3.1 adds continuous control-loop integration for URE with goal-conditioned decisions, priority-aware non-blocking execution, real-time feedback adaptation, and merged reflex telemetry while preserving deterministic v2/v3 execution contracts and safety boundaries.
+v3.2.1 adds fluid coordinated reflex intelligence to IEE with multi-intent bundles, continuous control smoothing, specialist-agent coordination, richer runtime diagnostics, and disk-backed runtime memory while preserving deterministic safety-gated execution contracts.

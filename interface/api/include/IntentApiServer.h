@@ -16,6 +16,7 @@
 #include "IntentRegistry.h"
 #include "PlatformLayer.h"
 #include "UniversalReflexEngine.h"
+#include "ReflexCoordination.h"
 #include "Telemetry.h"
 
 namespace iee {
@@ -47,14 +48,22 @@ private:
         std::int64_t lastDecisionTimeUs{0};
         std::int64_t lastLoopTimeUs{0};
         bool lastGoalConditioned{false};
+        std::uint64_t bundleFrames{0};
+        std::uint64_t coordinatedActions{0};
         std::chrono::system_clock::time_point startedAt{std::chrono::system_clock::now()};
         std::chrono::system_clock::time_point lastTickAt{std::chrono::system_clock::time_point{}};
         ReflexGoal goal;
+        AttentionMap attention;
+        std::vector<PredictedState> predictions;
+        std::vector<ReflexBundle> bundles;
+        CoordinatedOutput coordinatedOutput;
     };
 
     std::string HandleRequest(const std::string& request);
     ControlRuntime& EnsureControlRuntime();
     std::string SerializeUreStatusJson() const;
+    bool RestoreUrePersistentState();
+    void PersistUrePersistentState();
 
     IntentRegistry& registry_;
     ExecutionEngine& executionEngine_;
@@ -71,6 +80,7 @@ private:
     TemporalStateEngine temporalStateEngine_;
     mutable std::mutex reflexMutex_;
     UniversalReflexAgent reflexAgent_;
+    SkillMemoryStore skillMemoryStore_;
     mutable std::mutex ureRuntimeMutex_;
     UreRuntimeState ureRuntime_;
 };

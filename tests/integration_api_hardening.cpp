@@ -551,7 +551,10 @@ int main() {
 
         {
             const std::string response = api.HandleRequestForTesting(
-                BuildHttpRequest("POST", "/ure/goal", "{\"goal\":\"click save\",\"target\":\"Save\",\"preferred_actions\":\"activate\"}"));
+                BuildHttpRequest(
+                    "POST",
+                    "/ure/goal",
+                    "{\"goal\":\"click save\",\"target\":\"Save\",\"domain\":\"ui\",\"preferred_actions\":[\"activate\",\"select\"],\"active\":true}"));
             AssertTrue(HasStatus(response, 200), "POST /ure/goal should return 200");
             AssertTrue(response.find("\"goal_version\"") != std::string::npos, "URE goal response should include goal_version");
         }
@@ -566,6 +569,25 @@ int main() {
             const std::string response = api.HandleRequestForTesting(BuildHttpRequest("GET", "/telemetry/reflex"));
             AssertTrue(HasStatus(response, 200), "GET /telemetry/reflex should return 200");
             AssertTrue(response.find("\"sample_count\"") != std::string::npos, "Reflex telemetry response should include sample_count");
+        }
+
+        {
+            const std::string response = api.HandleRequestForTesting(BuildHttpRequest("GET", "/ure/bundles"));
+            AssertTrue(HasStatus(response, 200), "GET /ure/bundles should return 200");
+            AssertTrue(response.find("\"bundles\"") != std::string::npos, "URE bundles route should return bundle payload");
+        }
+
+        {
+            const std::string response = api.HandleRequestForTesting(BuildHttpRequest("GET", "/ure/attention"));
+            AssertTrue(HasStatus(response, 200), "GET /ure/attention should return 200");
+            AssertTrue(response.find("\"focus_objects\"") != std::string::npos, "URE attention route should include focus_objects");
+        }
+
+        {
+            const std::string response = api.HandleRequestForTesting(BuildHttpRequest("GET", "/ure/prediction"));
+            AssertTrue(HasStatus(response, 200), "GET /ure/prediction should return 200");
+            AssertTrue(response.find("\"object_id\"") != std::string::npos || response.find("[") != std::string::npos,
+                "URE prediction route should include prediction content");
         }
 
         {

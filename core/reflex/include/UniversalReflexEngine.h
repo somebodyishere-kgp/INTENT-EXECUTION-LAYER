@@ -210,6 +210,7 @@ public:
 
     ReflexMetricsSnapshot Metrics() const;
     std::vector<ExperienceEntry> Experience(std::size_t limit = 64U) const;
+    void RestoreExperience(const std::vector<ExperienceEntry>& entries);
 
 private:
     static std::string BiasKey(const ReflexDecision& decision);

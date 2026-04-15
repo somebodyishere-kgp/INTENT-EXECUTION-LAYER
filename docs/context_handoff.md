@@ -1,78 +1,78 @@
-# IEE Context Handoff (v3.1)
+# IEE Context Handoff (v3.2.1)
 
 ## 1. What Are We Building
-IEE is a deterministic execution/control layer for software environments.
+IEE is a deterministic execution/control layer that turns live software environments into a structured intent space.
 
-v3.1 adds continuous URE integration into the control runtime loop, including runtime lifecycle APIs, goal conditioning, and reflex telemetry merge.
+v3.2.1 (Phase 15) extends continuous URE into fluid multi-intent coordinated intelligence while preserving existing safety and contract guarantees.
 
 ## 2. Current State
 Completed:
 
-- Added new URE core module at `core/reflex`.
-- Implemented feature extraction, world modeling, affordance mapping, meta-policy decisions, bounded exploration, and experience memory.
-- Added URE API routes for model/affordance/decision/metrics/experience/step/demo.
-- Integrated optional reflex action execution via existing `ActionExecutor`.
-- Added policy-aware execution gating.
-- Added integration test coverage for URE routes.
-- Integrated continuous `UreDecisionProvider` into control runtime decision loop.
-- Added runtime control endpoints: `/ure/start`, `/ure/stop`, `/ure/status`, `/ure/goal`, `/ure/goal (GET)`.
-- Added queue priority hint propagation and execution observer feedback path.
-- Added reflex telemetry merge (`TelemetrySnapshot.reflex`) and `GET /telemetry/reflex`.
-- Added CLI commands: `iee ure live`, `iee ure debug`, `iee ure demo realtime`.
-- Verified Release build and full CTest suite.
+- Added coordination runtime module under core/reflex for bundle synthesis, coordination, continuous smoothing, attention, prediction, and skill memory.
+- Integrated specialist bundle generation (movement, aim, interaction, strategy) into continuous URE provider flow.
+- Added micro-planning and conflict-aware action coordination before intent emission.
+- Added continuous action mapping into runtime intents with bounded vector fields.
+- Added richer goal parser support (array-based preferred_actions and bool fields).
+- Added disk-backed persistence for goal, experience, and skills with restore/save lifecycle hooks.
+- Added API routes for bundles, attention, and prediction diagnostics.
+- Extended /ure/status, /ure/step, and /ure/demo payloads with coordinated runtime diagnostics.
+- Extended CLI debug and realtime demo workflows for bundle/continuous visibility.
+- Extended integration tests for new routes and richer goal payload behavior.
 
 Partially built:
 
-- Persisted experience memory backend is not yet implemented.
-- Multi-intent reflex bundles are not yet enabled in continuous mode.
+- Native adapter-specific analog control bindings are still represented through generic intent params.
+- Predictive model remains deterministic short-horizon extrapolation.
 
 ## 3. Last Work Done
-- Created:
-  - `docs/reflex_runtime.md`
-  - `core/reflex/include/UniversalReflexEngine.h`
-  - `core/reflex/src/UniversalReflexEngine.cpp`
-  - `tests/integration_universal_reflex.cpp`
-- Updated:
-  - `core/execution/include/ControlRuntime.h`
-  - `core/execution/src/ControlRuntime.cpp`
-  - `core/telemetry/include/Telemetry.h`
-  - `core/telemetry/src/Telemetry.cpp`
-  - `interface/api/include/IntentApiServer.h`
-  - `interface/api/src/IntentApiServer.cpp`
-  - `interface/cli/include/CliApp.h`
-  - `interface/cli/src/CliApp.cpp`
-  - `interface/cli/src/CliParser.cpp`
-  - `tests/integration_api_hardening.cpp`
-  - required docs and README
-- Validation:
-  - `cmake --build build --config Release`
-  - `ctest --test-dir build -C Release --output-on-failure`
-  - result: 20/20 tests passed.
+Created:
+
+- core/reflex/include/ReflexCoordination.h
+- core/reflex/src/ReflexCoordination.cpp
+- docs/continuous_control.md
+- docs/reflex_coordination.md
+
+Updated:
+
+- core/reflex/include/UniversalReflexEngine.h
+- core/reflex/src/UniversalReflexEngine.cpp
+- interface/api/include/IntentApiServer.h
+- interface/api/src/IntentApiServer.cpp
+- interface/cli/src/CliApp.cpp
+- interface/cli/src/CliParser.cpp
+- tests/integration_universal_reflex.cpp
+- tests/integration_api_hardening.cpp
+- CMakeLists.txt
+- required architecture/status/parity/issues/handoff/runtime docs
+
+Validation activity:
+
+- Release build and test baseline has remained green during Phase 15 integration.
+- Mandatory realtime demos were executed for representative FPS/UI/workflow goals with non-empty coordinated outputs.
 
 ## 4. Current Problem
 No active compile/test blocker.
 
-Current scope limitation:
-- Goal/experience runtime state remains process-local and is not yet persisted across restarts.
+Operational limitation:
+
+- VS Code CMake extension configure path may intermittently fail in this environment despite healthy direct cmake/ctest runs.
 
 ## 5. Next Plan
-1. Add persisted storage for reflex goals and experience memory with bounded retention.
-2. Add optional multi-intent reflex bundles for coordinated control actions.
-3. Expand scenario stress tests for long-running continuous URE loops.
-4. Add richer goal schema parsing beyond flat string fields.
-5. Extend CLI with reusable long-lived API session mode if needed.
+1. Add adapter-level native handling for continuous control vectors where supported.
+2. Add long-run stress tests for coordination stability and persistence churn.
+3. Expand prediction quality with richer temporal cues while keeping determinism.
+4. Add policy controls for specialist-agent weighting and bundle source throttling.
+5. Add cross-platform persistence path hardening and retention caps.
 
 ## 6. Key Decisions Taken
-- Keep v3 additive; no breaking v2 contracts.
-- Keep reflex logic deterministic and bounded.
-- Keep inference domain-agnostic and structural.
-- Reuse existing action contracts for safe execution.
-- Gate execution/exploration via central policy store.
-- Keep continuous runtime path non-blocking and queue-priority aware.
+- Keep architecture additive and backward-compatible with v2/v3.1 routes.
+- Keep reflex coordination deterministic and bounded by stable ordering.
+- Keep execution safety policy-gated before runtime action dispatch.
+- Persist runtime memory in simple line-oriented formats for reliability and fast restore.
+- Keep continuous loop non-blocking by using queue-based intent execution.
 
 ## 7. Multi-Agent Contribution
-- Architecture agent: produced additive integration blueprint for URE.
-- Core implementation agent: implemented URE module and API routes.
-- Debugging agent: resolved build/test integration issues and enum mismatch.
-- Refactoring agent: tightened route safety and naming clarity.
-- Documentation agent: synchronized required docs and added new URE specs.
+- Architecture/research passes defined Phase 15 module boundaries and integration approach.
+- Implementation pass delivered coordination module and runtime wiring.
+- Debug pass validated route contracts and runtime counters under demo load.
+- Documentation pass synchronized required release docs and handoff state.

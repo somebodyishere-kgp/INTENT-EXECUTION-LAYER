@@ -967,6 +967,40 @@ std::vector<ExperienceEntry> UniversalReflexAgent::Experience(std::size_t limit)
     return entries;
 }
 
+void UniversalReflexAgent::RestoreExperience(const std::vector<ExperienceEntry>& entries) {
+    experience_.clear();
+    failureBiasByKey_.clear();
+    affordanceConfidenceAdjustments_.clear();
+
+    if (entries.empty()) {
+        return;
+    }
+
+    const std::size_t start = entries.size() > 512U ? entries.size() - 512U : 0U;
+    for (std::size_t index = start; index < entries.size(); ++index) {
+        const ExperienceEntry& entry = entries[index];
+        experience_.push_back(entry);
+
+        if (!entry.action.objectId.empty() && !entry.action.action.empty()) {
+            const std::string biasKey = BiasKey(entry.action);
+            float& bias = failureBiasByKey_[biasKey];
+            if (entry.reward >= 0.0F) {
+                bias = (std::max)(0.0F, bias - 0.08F);
+            } else {
+                bias = (std::min)(0.90F, bias + 0.16F);
+            }
+
+            const std::string adjustmentKey = entry.action.objectType + "|" + entry.action.action;
+            float& adjustment = affordanceConfidenceAdjustments_[adjustmentKey];
+            if (entry.reward >= 0.0F) {
+                adjustment = (std::min)(0.30F, adjustment + 0.01F);
+            } else {
+                adjustment = (std::max)(-0.30F, adjustment - 0.02F);
+            }
+        }
+    }
+}
+
 std::string UniversalReflexAgent::BiasKey(const ReflexDecision& decision) {
     return decision.action + "|" + decision.objectId;
 }

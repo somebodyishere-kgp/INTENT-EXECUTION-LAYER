@@ -60,6 +60,10 @@ CTestTestfile.cmake
 *.tmp
 *.bak
 
+# Runtime reflex persistence artifacts
+artifacts/reflex/*.json
+artifacts/reflex/*.tsv
+
 # Local assistant scaffolding
 .agents/
 .github/

@@ -192,7 +192,10 @@ int main() {
 
         {
             const std::string response = api.HandleRequestForTesting(
-                BuildHttpRequest("POST", "/ure/goal", "{\"goal\":\"click save\",\"target\":\"Save\",\"preferred_actions\":\"activate\"}"));
+                BuildHttpRequest(
+                    "POST",
+                    "/ure/goal",
+                    "{\"goal\":\"click save\",\"target\":\"Save\",\"domain\":\"ui\",\"preferred_actions\":[\"activate\",\"select\"],\"active\":true}"));
             AssertTrue(HasStatus(response, 200), "POST /ure/goal should return 200");
             AssertTrue(response.find("\"goal\"") != std::string::npos, "URE goal response should include goal payload");
             AssertTrue(response.find("\"goal_version\"") != std::string::npos, "URE goal response should include goal version");
@@ -208,6 +211,24 @@ int main() {
             const std::string response = api.HandleRequestForTesting(BuildHttpRequest("GET", "/telemetry/reflex"));
             AssertTrue(HasStatus(response, 200), "GET /telemetry/reflex should return 200");
             AssertTrue(response.find("\"sample_count\"") != std::string::npos, "Reflex telemetry route should include sample count");
+        }
+
+        {
+            const std::string response = api.HandleRequestForTesting(BuildHttpRequest("GET", "/ure/bundles"));
+            AssertTrue(HasStatus(response, 200), "GET /ure/bundles should return 200");
+            AssertTrue(response.find("\"bundles\"") != std::string::npos, "URE bundles route should include bundles payload");
+        }
+
+        {
+            const std::string response = api.HandleRequestForTesting(BuildHttpRequest("GET", "/ure/attention"));
+            AssertTrue(HasStatus(response, 200), "GET /ure/attention should return 200");
+            AssertTrue(response.find("\"focus_objects\"") != std::string::npos, "URE attention route should include focus_objects");
+        }
+
+        {
+            const std::string response = api.HandleRequestForTesting(BuildHttpRequest("GET", "/ure/prediction"));
+            AssertTrue(HasStatus(response, 200), "GET /ure/prediction should return 200");
+            AssertTrue(response.find("[") != std::string::npos, "URE prediction route should return JSON array content");
         }
 
         {
@@ -228,6 +249,8 @@ int main() {
             AssertTrue(HasStatus(response, 200), "POST /ure/demo should return 200");
             AssertTrue(response.find("\"scenario\":\"unknown_ui\"") != std::string::npos, "URE demo should echo scenario");
             AssertTrue(response.find("\"world_model\"") != std::string::npos, "URE demo should include world model in step payload");
+            AssertTrue(response.find("\"bundles\"") != std::string::npos, "URE demo should include bundle payload");
+            AssertTrue(response.find("\"coordinated_output\"") != std::string::npos, "URE demo should include coordinated output");
         }
 
         {

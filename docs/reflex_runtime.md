@@ -1,115 +1,128 @@
-# IEE v3.1 Reflex Runtime (Phase 14)
+# IEE v3.2.1 Reflex Runtime (Phase 15)
 
 ## Purpose
 
-This document describes the continuous Universal Reflex Engine (URE) runtime integration added in v3.1.
+This document describes the coordinated continuous URE runtime in v3.2.1.
 
-v3.0 provided step-mode URE (`/ure/step`).
-v3.1 adds continuous frame-synced reflex operation inside the control runtime.
+v3.0 added step-mode URE.
+v3.1 added continuous runtime integration.
+v3.2.1 adds multi-intent bundle coordination, continuous control smoothing, richer diagnostics, and disk-backed runtime memory.
 
 ## Runtime Model
 
 Continuous URE flow:
 
-1. `ControlRuntime` captures synchronized environment state.
-2. `UreDecisionProvider` runs deterministic `UniversalReflexAgent::Step(...)`.
-3. Resulting reflex decision is converted to an intent (if executable and enabled).
-4. Intent is enqueued with priority hint (`control_priority`).
-5. Existing execution pipeline executes the intent asynchronously.
-6. Execution observer records outcome back into reflex experience memory.
-7. Reflex telemetry sample is written to merged telemetry stream.
+1. ControlRuntime captures synchronized environment state.
+2. UreDecisionProvider runs UniversalReflexAgent::Step(...).
+3. Runtime builds attention map and predicted states from world model.
+4. Specialist agents propose bundles in parallel (movement, aim, interaction, strategy).
+5. Meta-policy bundle is merged and refined by MicroPlanner.
+6. ActionCoordinator resolves conflicts and fuses continuous/discrete outputs.
+7. ContinuousController smooths final vector output.
+8. Coordinated output maps to runtime intents (discrete + continuous).
+9. Intents enqueue non-blocking into ControlRuntime.
+10. Execution observer records outcomes to reflex memory and skill memory.
 
 ## Endpoint Contract
 
 ### Start
 
-`POST /ure/start`
+POST /ure/start
 
-Supported flat JSON string fields:
+Supported fields:
 
-- `execute`: `"true"|"false"`
-- `priority`: `"auto"|"high"|"medium"|"low"`
-- `decision_budget_us`: decision budget for reflex step
-- `targetFrameMs`, `maxFrames`, `observationIntervalMs`, `decisionBudgetMs`: forwarded control runtime config
-- `demo_mode`: optional runtime demo flag
+- execute: true|false
+- priority: auto|high|medium|low
+- decision_budget_us
+- targetFrameMs, maxFrames, observationIntervalMs, decisionBudgetMs
+- demo_mode
 
 ### Stop
 
-`POST /ure/stop`
+POST /ure/stop
 
-Stops continuous URE provider and detaches runtime execution observer without forcing control runtime shutdown.
+Stops URE decision provider and execution observer bindings, then persists goal/experience/skill state.
 
 ### Status
 
-`GET /ure/status`
+GET /ure/status
 
 Returns:
 
-- runtime lifecycle flags (`active`, `control_active`)
-- execution mode (`execute_actions`, priority mode)
-- runtime counters (`frames_evaluated`, `intents_produced`)
-- execution outcome counters (`execution_attempts`, successes/failures)
-- last reflex timing and reason
-- current goal payload/version
-- reflex metrics and merged telemetry snapshot
+- runtime lifecycle flags
+- loop counters and timing diagnostics
+- goal and goal version
+- attention snapshot
+- prediction snapshot
+- latest bundles and coordinated_output
+- skill-memory summaries
+- reflex metrics and telemetry envelope
 - control runtime status when available
 
 ### Goal
 
-`POST /ure/goal`
+POST /ure/goal and GET /ure/goal
 
-Fields:
+Supports:
 
-- `goal` (required unless `clear=true`)
-- `target`
-- `domain`
-- `preferred_actions` (comma/space-separated)
-- `active`
-- `clear`
+- goal/objective string
+- target/target_hint
+- domain
+- preferred_actions as array or string
+- active bool
+- clear/reset bool
 
-`GET /ure/goal` returns current goal object.
+### New Coordination Diagnostics
 
-## Goal-Conditioned Reflex
+- GET /ure/bundles
+- GET /ure/attention
+- GET /ure/prediction
 
-`ReflexGoal` is injected into `MetaPolicyEngine::Decide(...)`.
+### Step and Demo Extensions
 
-Behavior:
+POST /ure/step and POST /ure/demo now return:
 
-- object scoring receives deterministic boost when goal tokens match object/type/label
-- preferred actions bias selected affordance action when available
-- decision reason is prefixed with `goal_conditioned_...` for traceability
+- attention
+- prediction
+- bundles
+- coordinated_output
+- execution result fields (when requested)
 
-## Priority Mapping
+## Priority and Intent Mapping
 
-When `priority=auto`, runtime maps reflex decision priority to queue classes:
+Priority remains derived from reflex decision + runtime priority policy.
 
-- high: `priority >= 0.85`
-- medium: `priority >= 0.62`
-- low: otherwise
+Coordinated outputs are mapped as:
 
-When `priority` is fixed (`high|medium|low`), runtime always uses configured value.
+- each discrete coordinated action -> intent
+- continuous vector (move/aim/look/fire/interact) -> continuous intent payload
 
-## Telemetry Integration
+This allows multi-intent emission in one pass while keeping queue-based non-blocking execution.
 
-v3.1 adds reflex telemetry integration to primary telemetry:
+## Persistence Model
 
-- `Telemetry::LogReflexSample(...)`
-- `TelemetrySnapshot.reflex` summary
-- `GET /telemetry/reflex` stream
-- `GET /ure/metrics` includes metrics + telemetry + runtime envelope
+Runtime persistence files:
+
+- artifacts/reflex/goal_state_v3_2.json
+- artifacts/reflex/experience_state_v3_2.tsv
+- artifacts/reflex/skills_v3_2.tsv
+
+Lifecycle:
+
+- load during API server initialization
+- save on goal updates and runtime stop paths
 
 ## CLI Surfaces
 
-- `iee ure live`
-- `iee ure debug`
-- `iee ure demo realtime`
+- iee ure live
+- iee ure debug --bundles --continuous
+- iee ure demo realtime
 
-These commands invoke API routes in-process for deterministic local runtime control and diagnostics.
+Debug surfaces expose coordination diagnostics directly through API pass-through.
 
 ## Safety and Determinism Guarantees
 
-- policy-gated execution (`PermissionPolicyStore`)
-- no LLM dependency in reflex loop
-- bounded decision budgets and deterministic tie-breaking
-- non-blocking continuous pipeline via queue-based execution
-- additive integration with existing v2/v3 contracts
+- policy-gated execution remains enforced
+- deterministic ordering and bounded output limits are preserved
+- no LLM dependency in reflex runtime
+- continuous runtime remains additive and backward-compatible with existing contracts

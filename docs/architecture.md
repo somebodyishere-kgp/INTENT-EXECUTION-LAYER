@@ -1,162 +1,137 @@
-# IEE v3.1 Architecture
+# IEE v3.2.1 Architecture
 
 ## Purpose
-IEE v3.1 extends the Universal Reflex Engine (URE) from API-step mode into a continuous control-runtime intelligence loop.
+IEE v3.2.1 upgrades the Universal Reflex Engine (URE) runtime from single-intent reflex output to fluid multi-intent continuous intelligence.
 
-The architecture remains additive over v2.x and preserves existing execution contracts.
+The design remains additive over v3.1 and preserves existing v2/v3 execution and safety contracts.
 
-## URE Continuous Pipeline
+## Phase 15 Continuous Pipeline
 
 ```text
 EnvironmentState (ScreenState + UIG)
         |
         v
-UniversalFeatureExtractor
+UniversalReflexAgent::Step
         |
-        v
-WorldModelBuilder
+        +--> AttentionMap builder
+        +--> PredictedState builder
         |
-        v
-AffordanceEngine
+        +--> Specialist bundle agents (parallel)
+        |       |- MovementAgent
+        |       |- AimAgent
+        |       |- InteractionAgent
+        |       '- StrategyAgent
         |
-        v
-MetaPolicyEngine
+        +--> MicroPlanner (bundle refinement)
+        +--> ActionCoordinator (conflict-aware fusion)
+        +--> ContinuousController (signal smoothing)
         |
-        v
-UniversalReflexAgent
+        +--> Intent mapping
+        |       |- coordinated discrete actions -> intents
+        |       '- coordinated continuous vector -> intent params
         |
-        +--> UreDecisionProvider (continuous)
-        |       |
-        |       +--> Intent(priority_hint) -> ControlRuntime queue
-        |       +--> ReflexTelemetrySample -> Telemetry
-        |
-        +--> ExplorationEngine
-        +--> ExperienceMemory
-        +--> Optional /act execution (/ure/step)
-        |
-        +--> ExecutionObserver feedback -> RecordExecutionOutcome
+        +--> ControlRuntime queue (priority-aware, non-blocking)
+        +--> ExecutionObserver feedback -> Reflex + Skill memory updates
+        +--> Telemetry + runtime status cache
+        +--> Disk persistence (goal, experience, skills)
 ```
 
-## New Core Module
+## New Coordination Module
 
 Added:
 
-- `core/reflex/include/UniversalReflexEngine.h`
-- `core/reflex/src/UniversalReflexEngine.cpp`
+- core/reflex/include/ReflexCoordination.h
+- core/reflex/src/ReflexCoordination.cpp
 
-The module includes the following primitives:
+Key primitives:
 
-- `UniversalFeature`
-- `WorldObject`, `WorldModel`, `Relationship`
-- `Affordance`
-- `PolicyRule`
-- `ExplorationResult`
-- `ExperienceEntry`
-- `ReflexGoal`
-- `UniversalReflexAgent`
+- ContinuousAction
+- ReflexBundle
+- CoordinatedOutput
+- AttentionMap
+- PredictedState
+- Skill
 
-## Control Runtime Integration
+Key services:
 
-v3.1 introduces a continuous URE runtime layer inside control execution:
+- ContinuousController
+- ActionCoordinator
+- MovementAgent / AimAgent / InteractionAgent / StrategyAgent
+- MicroPlanner
+- SkillMemoryStore
 
-- `UreDecisionProvider` drives deterministic reflex decisions in control decision passes.
-- Control queue priority hints (`control_priority`) are generated from reflex priority and goal context.
-- Runtime execution observer updates reflex adaptation state from actual execution outcomes.
-- Integration remains non-blocking: actions are enqueued and executed through existing runtime pipeline.
+## Runtime Integration Changes
 
-## Integration Points
+Phase 15 expands UreDecisionProvider behavior:
 
-### Runtime state inputs
-- Uses `EnvironmentState`, `ScreenState`, and `InteractionGraph` as deterministic input signals.
-- No app-specific adapters are required for reflex inference.
+- Generates specialist bundles in parallel and appends meta-policy bundle.
+- Refines bundles through MicroPlanner before execution mapping.
+- Resolves conflicts and fuses signals via ActionCoordinator.
+- Smooths final continuous vector through ContinuousController.
+- Produces multi-intent outputs per decision pass when execution is enabled.
+- Publishes attention, prediction, bundles, and coordinated output to runtime status.
 
-### Action integration
-- Reflex decisions can be executed through existing `ActionExecutor` (`POST /act` contract path).
-- Reveal/verification behavior remains enforced by existing action and execution contracts.
-- Continuous reflex uses control runtime enqueue/execute path and preserves adapter verification contracts.
+## Goal and Persistence Model
 
-### Policy integration
-- URE execution and exploration are gated by `PermissionPolicyStore`.
-- Unsafe execution is blocked before invoking actions.
+Goal payload parsing now supports richer schema forms:
 
-### API integration
-Added routes in API server:
+- flat fields (v3.1 compatible)
+- array-based preferred_actions
+- bool fields like active/clear in object payloads
 
-- `GET /ure/world-model`
-- `GET /ure/affordances`
-- `GET /ure/decision`
-- `GET /ure/metrics`
-- `GET /ure/experience`
-- `GET /ure/status`
-- `GET /ure/goal`
-- `GET /telemetry/reflex`
-- `POST /ure/step`
-- `POST /ure/demo`
-- `POST /ure/start`
-- `POST /ure/stop`
-- `POST /ure/goal`
+Runtime persistence is now disk-backed:
 
-### CLI integration
+- artifacts/reflex/goal_state_v3_2.json
+- artifacts/reflex/experience_state_v3_2.tsv
+- artifacts/reflex/skills_v3_2.tsv
 
-- `iee ure live`
-- `iee ure debug`
-- `iee ure demo realtime`
+Restore path runs during API server startup; save path runs on goal update and runtime stop.
 
-## Goal-Conditioned Reflex
+## API and CLI Surface Additions
 
-`ReflexGoal` enables deterministic goal conditioning without LLM calls:
+New API endpoints:
 
-- goal text, target hint, domain, preferred action list
-- active/inactive switching
-- versioned runtime updates through `/ure/goal`
-- policy scoring bias when world objects match goal tokens
+- GET /ure/bundles
+- GET /ure/attention
+- GET /ure/prediction
 
-## Design Rules Enforced
+Extended payloads:
 
-- No heavy ML/training loops in core runtime.
-- No LLM call in reflex loop.
-- Deterministic sorting/tie-break behavior.
-- Bounded relationship generation and exploration.
-- Backward-compatible additive integration with v2 routes.
-- Continuous path remains non-blocking and bounded per decision pass.
+- POST /ure/step returns attention, prediction, bundles, coordinated_output.
+- POST /ure/demo returns attention, prediction, bundles, coordinated_output.
+- GET /ure/status now includes bundle counters, coordinated output, and learned skills.
 
-## Performance Model
+CLI updates:
 
-URE captures timing in both step-mode and continuous-mode:
+- iee ure debug --bundles
+- iee ure debug --continuous
+- iee ure demo realtime now captures per-sample demo payload in JSON mode.
 
-- decision time (microseconds)
-- total loop time (microseconds)
-- decision budget compliance (`decision_within_budget`)
+## Determinism and Safety
 
-Aggregated metrics:
+Phase 15 keeps deterministic and bounded behavior:
 
-- average decision latency
-- p95 decision latency
-- average loop latency
-- over-budget decision count
-- exploratory decision count
-- goal-conditioned decision count
-- intents produced in continuous mode
+- stable sort and tie-break ordering by priority/source/object id
+- bounded bundle set after planning
+- bounded prediction and attention result counts
+- policy-aware execution preserved through existing runtime contracts
+- no external ML loop or LLM dependency in reflex path
 
-Merged telemetry surfaces:
+## Performance and Observability
 
-- `TelemetrySnapshot.reflex`
-- `GET /telemetry/reflex`
-- `GET /ure/metrics` runtime + telemetry envelope
+The runtime continues to expose microsecond timings and budget compliance while adding coordination diagnostics:
 
-## Safety Model
+- bundle_frames
+- coordinated_actions
+- attention and prediction snapshots
+- coordinated output signals
+- skill-memory summaries
 
-Reflex execution model is safety constrained:
-
-1. Build decision candidate from structural signals only.
-2. Check policy (`allow_execute`) before action execution.
-3. Use bounded exploration only when execution-safe.
-4. Record outcomes and bias against repeated failures.
-5. Continuous runtime can be stopped independently via `/ure/stop` without tearing down control runtime.
+Telemetry remains merged through existing reflex telemetry surfaces.
 
 ## Validation Baseline
 
-- Build: `cmake --build build --config Release`
-- Test: `ctest --test-dir build -C Release --output-on-failure`
+- Build: cmake --build build --config Release
+- Test: ctest --test-dir build -C Release --output-on-failure
 
-Current baseline includes URE runtime endpoint checks in integration hardening and universal reflex tests.
+Integration coverage now includes bundles/attention/prediction endpoints and richer goal payload schema.

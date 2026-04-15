@@ -22,6 +22,30 @@ This repository includes:
 - IEE v1.x to v2.x foundations (observer, capability graph, interaction graph, action interface, policy, workflows)
 - IEE v3.0 (Phase 13.5): Universal Reflex Engine (URE)
 - IEE v3.1 (Phase 14): continuous URE integration into the control runtime loop
+- IEE v3.2.1 (Phase 15): fluid multi-intent continuous coordination and persistence
+
+## IEE v3.2.1 Highlights (Fluid Coordination Runtime)
+
+1. Multi-intent reflex coordination
+- Added specialist reflex bundles (movement, aim, interaction, strategy).
+- Added MicroPlanner and ActionCoordinator to refine and fuse coordinated outputs.
+
+2. Continuous control smoothing
+- Added continuous vector output model for move/aim/look/fire/interact.
+- Added ContinuousController smoothing before intent dispatch.
+
+3. Attention and prediction diagnostics
+- Added runtime attention maps and short-horizon predictions.
+- Added API routes: `GET /ure/bundles`, `GET /ure/attention`, `GET /ure/prediction`.
+
+4. Richer goal schema and persistence
+- Added robust goal payload parser support for arrays and bool fields.
+- Added disk-backed persistence for goal, experience, and skills.
+
+5. CLI diagnostics expansion
+- Added `iee ure debug --bundles`.
+- Added `iee ure debug --continuous`.
+- Realtime demo JSON mode now captures per-sample `POST /ure/demo` payloads.
 
 ## IEE v3.1 Highlights (Continuous URE Runtime)
 
@@ -184,7 +208,7 @@ ctest --test-dir build -C Release --output-on-failure
 
 # continuous URE runtime
 ./build/Release/iee.exe ure live --samples 20 --interval_ms 120
-./build/Release/iee.exe ure debug --json
+./build/Release/iee.exe ure debug --bundles --continuous --json
 ./build/Release/iee.exe ure demo realtime --goal "stabilize active interaction target"
 ```
 
@@ -215,6 +239,9 @@ Key routes:
 - `GET /ure/experience`
 - `GET /ure/status`
 - `GET /ure/goal`
+- `GET /ure/bundles`
+- `GET /ure/attention`
+- `GET /ure/prediction`
 - `GET /telemetry/reflex`
 - `POST /ure/step`
 - `POST /ure/demo`
@@ -246,6 +273,8 @@ Primary docs:
 - [docs/affordance_model.md](docs/affordance_model.md)
 - [docs/world_model_spec.md](docs/world_model_spec.md)
 - [docs/reflex_runtime.md](docs/reflex_runtime.md)
+- [docs/continuous_control.md](docs/continuous_control.md)
+- [docs/reflex_coordination.md](docs/reflex_coordination.md)
 
 ## License
 

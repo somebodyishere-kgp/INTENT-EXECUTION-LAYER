@@ -39,6 +39,7 @@ add_library(iee_core
     core/observer/src/ObserverEngine.cpp
     core/platform/src/PlatformLayer.cpp
     core/reflex/src/UniversalReflexEngine.cpp
+    core/reflex/src/ReflexCoordination.cpp
     core/telemetry/src/Telemetry.cpp
     interface/api/src/IntentApiServer.cpp
     interface/sdk/src/IEEClient.cpp

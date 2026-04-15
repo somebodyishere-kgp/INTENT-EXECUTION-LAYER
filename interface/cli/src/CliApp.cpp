@@ -1389,7 +1389,7 @@ int CliApp::HandleApi(const ParsedCommand& command) {
     std::cout << "Routes: GET /health, GET /intents, GET /capabilities, GET /control/status, "
                  "GET /capabilities/full, GET /interaction-graph, GET /interaction-node/{id}, "
                  "GET /telemetry/persistence, GET /trace/{trace_id}, GET /stream/state, GET /state/ai, GET /stream/frame, GET /stream/live, GET /perf, "
-                 "GET /ure/status, GET /ure/goal, POST /execute, POST /act, POST /task/plan, POST /predict, POST /explain, POST /control/start, POST /control/stop, POST /ure/start, POST /ure/stop, POST /ure/goal, "
+                 "GET /ure/status, GET /ure/goal, GET /ure/bundles, GET /ure/attention, GET /ure/prediction, POST /execute, POST /act, POST /task/plan, POST /predict, POST /explain, POST /control/start, POST /control/stop, POST /ure/start, POST /ure/stop, POST /ure/goal, "
                  "POST /stream/control\n";
     std::cout << "Graph delta query: GET /interaction-graph?delta_since=<version>\n";
     if (singleRequest) {
@@ -1721,8 +1721,20 @@ int CliApp::HandleUre(const ParsedCommand& command) {
     };
 
     if (subcommand == "debug") {
+        const bool includeBundles = HasOption(command, "bundles");
+        const bool includeContinuous = HasOption(command, "continuous");
+
         const auto [statusCode, statusBody] = request("GET", "/ure/status", "");
         const auto [metricsCode, metricsBody] = request("GET", "/ure/metrics", "");
+        const auto [bundlesCode, bundlesBody] = includeBundles
+            ? request("GET", "/ure/bundles", "")
+            : std::make_pair(0, std::string());
+        const auto [attentionCode, attentionBody] = includeContinuous
+            ? request("GET", "/ure/attention", "")
+            : std::make_pair(0, std::string());
+        const auto [predictionCode, predictionBody] = includeContinuous
+            ? request("GET", "/ure/prediction", "")
+            : std::make_pair(0, std::string());
 
         if (jsonMode) {
             std::cout << "{";
@@ -1730,15 +1742,41 @@ int CliApp::HandleUre(const ParsedCommand& command) {
             std::cout << "\"status\":" << (statusBody.empty() ? "{}" : statusBody) << ",";
             std::cout << "\"metrics_code\":" << metricsCode << ",";
             std::cout << "\"metrics\":" << (metricsBody.empty() ? "{}" : metricsBody);
+            if (includeBundles) {
+                std::cout << ",\"bundles_code\":" << bundlesCode << ",";
+                std::cout << "\"bundles\":" << (bundlesBody.empty() ? "{}" : bundlesBody);
+            }
+            if (includeContinuous) {
+                std::cout << ",\"attention_code\":" << attentionCode << ",";
+                std::cout << "\"attention\":" << (attentionBody.empty() ? "{}" : attentionBody) << ",";
+                std::cout << "\"prediction_code\":" << predictionCode << ",";
+                std::cout << "\"prediction\":" << (predictionBody.empty() ? "[]" : predictionBody);
+            }
             std::cout << "}\n";
         } else {
             std::cout << "URE status (" << statusCode << ")\n";
             std::cout << statusBody << "\n\n";
             std::cout << "URE metrics (" << metricsCode << ")\n";
             std::cout << metricsBody << "\n";
+
+            if (includeBundles) {
+                std::cout << "\nURE bundles (" << bundlesCode << ")\n";
+                std::cout << bundlesBody << "\n";
+            }
+
+            if (includeContinuous) {
+                std::cout << "\nURE attention (" << attentionCode << ")\n";
+                std::cout << attentionBody << "\n\n";
+                std::cout << "URE prediction (" << predictionCode << ")\n";
+                std::cout << predictionBody << "\n";
+            }
         }
 
-        return (statusCode >= 200 && statusCode < 300 && metricsCode >= 200 && metricsCode < 300) ? 0 : 1;
+        const bool baseOk = statusCode >= 200 && statusCode < 300 && metricsCode >= 200 && metricsCode < 300;
+        const bool bundlesOk = !includeBundles || (bundlesCode >= 200 && bundlesCode < 300);
+        const bool continuousOk = !includeContinuous ||
+            ((attentionCode >= 200 && attentionCode < 300) && (predictionCode >= 200 && predictionCode < 300));
+        return (baseOk && bundlesOk && continuousOk) ? 0 : 1;
     }
 
     const std::size_t samples = ReadSizeOption(command, "samples", demoRealtime ? 40U : 24U, 240U);
@@ -1807,13 +1845,41 @@ int CliApp::HandleUre(const ParsedCommand& command) {
 
     for (std::size_t index = 0; index < samples; ++index) {
         const auto [sampleCode, sampleBody] = request("GET", "/ure/status", "");
+        int demoCode = 0;
+        std::string demoBody;
+        if (demoRealtime) {
+            std::ostringstream demoPayload;
+            demoPayload << "{";
+            demoPayload << "\"scenario\":\"realtime\",";
+            demoPayload << "\"execute\":\"false\"";
+            demoPayload << "}";
+            const auto demoResponse = request("POST", "/ure/demo", demoPayload.str());
+            demoCode = demoResponse.first;
+            demoBody = demoResponse.second;
+        }
+
         if (sampleCode >= 200 && sampleCode < 300) {
-            sampleBodies.push_back(sampleBody);
+            if (demoRealtime) {
+                std::ostringstream combined;
+                combined << "{";
+                combined << "\"status\":" << (sampleBody.empty() ? "{}" : sampleBody) << ",";
+                combined << "\"demo_code\":" << demoCode << ",";
+                combined << "\"demo\":" << (demoBody.empty() ? "{}" : demoBody);
+                combined << "}";
+                sampleBodies.push_back(combined.str());
+            } else {
+                sampleBodies.push_back(sampleBody);
+            }
         }
 
         if (!jsonMode) {
             std::cout << "URE sample " << (index + 1U) << "/" << samples << " (" << sampleCode << ")\n";
-            std::cout << sampleBody << "\n";
+            if (demoRealtime) {
+                std::cout << "Status:\n" << sampleBody << "\n";
+                std::cout << "Demo (" << demoCode << "):\n" << demoBody << "\n";
+            } else {
+                std::cout << sampleBody << "\n";
+            }
         }
 
         if (index + 1U < samples) {
