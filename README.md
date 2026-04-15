@@ -6,95 +6,91 @@ It is built as an execution substrate and control plane, not a UI product.
 
 ## Why IEE
 
-Conventional automation stacks fail under ambiguity, latency spikes, stale state, and low observability. IEE addresses this with:
+Conventional automation stacks fail under ambiguity, stale state, weak observability, and execution drift.
+IEE addresses this with:
 
 - deterministic intent resolution and execution
-- bounded recovery and fallback behavior
-- verifiable contract-based execution
-- state projection for AI and external controllers
-- evidence-driven telemetry and performance contracts
+- bounded fallback and recovery behavior
+- explicit policy and safety controls
+- verifiable execution contracts
+- telemetry-first runtime diagnostics
 
 ## Runtime Stage
 
 This repository includes:
 
-- IEE v1.0 to v1.9 foundations (intent runtime, control runtime, interaction graph, AI/task interfaces)
-- IEE v2.0 (Phase 11): platformization across self-healing, semantic planning, adapter ecosystem metadata, temporal state history, policy controls, UCP envelopes, and expanded performance metrics
+- IEE v1.x to v2.x foundations (observer, capability graph, interaction graph, action interface, policy, workflows)
+- IEE v3.0 (Phase 13.5): Universal Reflex Engine (URE)
 
-## IEE v2.0 Highlights (Phase 11)
+## IEE v3.0 Highlights (Universal Reflex Engine)
 
-1. Self-healing execution
-- Added bounded deterministic recovery strategies in `SelfHealingExecutor`.
-- Recovery order is fixed: `retry` -> `alternate_node` -> `fallback_reveal`.
+1. Universal feature extraction
+- Added structural feature extraction from UIG, ScreenState, and cursor motion.
+- Feature types include: `interactive_object`, `dynamic_object`, `control_surface`, `target`, `obstacle`, `resource`, `navigation_element`, `text_region`.
 
-2. Temporal unified state
-- Added `TemporalStateEngine` with state history, transition metadata, and stability checks.
-- Added frame consistency metrics (`expected`, `actual`, `skipped`, `score`).
+2. Real-time world model
+- Added per-frame world model building with temporal consistency.
+- Object and relationship tracking includes: proximity, overlap, hierarchy, and motion.
 
-3. Multi-step execution
-- Added `IntentSequenceExecutor` and API route `POST /act/sequence`.
-- Added `WorkflowExecutor` and API route `POST /workflow/run`.
+3. Affordance inference
+- Added deterministic type-to-affordance mapping without app-specific logic.
+- Affordances are generated as reusable action primitives.
 
-4. Semantic interface
-- Added `SemanticPlannerBridge` and route `POST /task/semantic`.
-- Supports deterministic sequence generation for chained goals (`... then ...`).
+4. Meta-policy reflex decisions
+- Added priority-based universal policy rules:
+  - threat -> reduce risk
+  - target -> move toward
+  - resource -> acquire
+  - obstacle -> avoid
+  - unknown -> explore
 
-5. Experience memory
-- Added `ExecutionMemoryStore` for success/failure/fallback/latency memory.
-- Resolver scoring now includes execution memory bias.
+5. Bounded exploration and experience memory
+- Added safe exploration proposals for unknown states.
+- Added reward-based experience memory and failure-bias adaptation to avoid repeated mistakes.
 
-6. Adapter ecosystem
-- Added `AdapterMetadata` and `AdapterRegistry::ListMetadata()`.
-- Added route `GET /adapters` for deterministic adapter discovery.
+6. Reflex API integration
+- Added URE routes:
+  - `GET /ure/world-model`
+  - `GET /ure/affordances`
+  - `GET /ure/decision`
+  - `GET /ure/metrics`
+  - `GET /ure/experience`
+  - `POST /ure/step`
+  - `POST /ure/demo`
 
-7. Hybrid perception extensions
-- Expanded environment perception output with lightweight text and grouped region signals.
-- Added `lightweight_text_detections`, `grouped_region_count`, and `region_labels`.
+7. Safety and policy integration
+- Reflex execution obeys `PermissionPolicyStore`.
+- Exploration is gated by policy, deterministic, and bounded.
 
-8. Policy layer
-- Added global policy store with route controls:
-  - `GET /policy`
-  - `POST /policy`
-- Policy is enforced in `/act` and `/execute` paths.
-
-9. Workflow orchestration
-- Added deterministic sequence/workflow execution contracts in `core/platform`.
-
-10. UCP protocol envelopes
-- Added UCP wrappers:
-  - `POST /ucp/act`
-  - `GET /ucp/state`
-
-11. Performance and scale metrics
-- Added latency percentile route `GET /perf/percentiles` with `p50/p95/p99/p999`.
-- Added frame coherency route `GET /perf/frame-consistency`.
-
-12. Demo-ready API surfaces
-- Added end-to-end deterministic routes for semantic planning, sequence execution, policy enforcement, and UCP state/action envelopes.
+8. Performance model
+- Reflex step tracks microsecond decision/loop timing.
+- Metrics expose average and p95 decision time.
 
 ## Architecture
 
 ```text
-Observer -> Intent Registry ---------> Execution Engine -> Adapter Runtime
-   |              |                         ^                 |
-   |              v                         |                 v
-   |      Interaction Graph + Task Planner  |            Adapter Metadata
-   |              |                         |                 |
-   |              v                         |                 v
-   +----> Environment Adapter -------> Action Interface -----> Execution Contract
-                |                           |                     |
-                |                           v                     v
-                |                    Self-Healing Executor   Reveal -> Execute -> Verify
-                v
-         Unified EnvironmentState
-                |
-                +----> TemporalStateEngine (history/transitions/frame consistency)
-                |
-                +----> AIStateView / SemanticPlannerBridge / UCP envelopes
-
-Telemetry <---------------- traces + latency + percentiles + persistence + failures
-
-Platform Layer (core/platform): policy, memory, temporal state, sequence/workflow, semantic, UCP
+EnvironmentState (ScreenState + UIG)
+        |
+        v
+UniversalFeatureExtractor
+        |
+        v
+WorldModelBuilder
+        |
+        v
+AffordanceEngine
+        |
+        v
+MetaPolicyEngine
+        |
+        v
+UniversalReflexAgent
+        |
+        +--> (optional execute) ActionExecutor -> /act contract
+        |
+        +--> ExplorationEngine + ExperienceMemory
+        |
+        +--> Reflex metrics + API surfaces
 ```
 
 ## Repository Structure
@@ -110,6 +106,7 @@ core/
   interaction/
   observer/
   platform/
+  reflex/
   telemetry/
 interface/
   api/
@@ -130,169 +127,60 @@ ctest --test-dir build -C Release --output-on-failure
 ## CLI Quickstart
 
 ```powershell
-# list intents and capabilities
+# core runtime commands
 ./build/Release/iee.exe list-intents
-./build/Release/iee.exe capabilities --all
-
-# one-step action interface
-./build/Release/iee.exe act "open command palette" --pure-json
-./build/Release/iee.exe act --action set_value --target "search bar" --value "github copilot" --domain browser --json
-
-# planning and AI state
 ./build/Release/iee.exe state/ai --pure-json
-./build/Release/iee.exe demo presentation --json
-./build/Release/iee.exe demo browser --json
+./build/Release/iee.exe act "open command palette" --json
 
-# graph and node diagnostics
-./build/Release/iee.exe graph --json
-./build/Release/iee.exe node <node_id>
-./build/Release/iee.exe plan <node_id>
-./build/Release/iee.exe reveal <node_id>
-
-# telemetry and perf
+# telemetry and contracts
 ./build/Release/iee.exe telemetry --json
-./build/Release/iee.exe latency --json --limit 300
 ./build/Release/iee.exe perf --json --strict
 ./build/Release/iee.exe vision --json --limit 300
 
-# API server
+# run local API
 ./build/Release/iee.exe api --port 8787
 ```
 
 ## API Quickstart
 
 ```powershell
-# start API server
 ./build/Release/iee.exe api --port 8787
 ```
 
-Available routes:
+Key routes:
 
 - `GET /health`
-- `GET /intents`
-- `GET /capabilities`
-- `GET /capabilities/full`
-- `GET /execution/memory`
-- `GET /adapters`
-- `GET /trace/{trace_id}`
-- `GET /control/status`
-- `GET /stream/state`
 - `GET /state/ai`
-- `GET /state/history`
-- `GET /stream/frame`
+- `POST /act`
+- `POST /task/plan`
+- `POST /task/semantic`
 - `GET /interaction-graph`
-- `GET /interaction-node/{id}`
-- `GET /stream/live`
+- `GET /trace/{trace_id}`
+- `GET /policy`
+- `POST /policy`
 - `GET /perf`
 - `GET /perf/percentiles`
 - `GET /perf/frame-consistency`
-- `GET /policy`
-- `GET /telemetry/persistence`
-- `GET /ucp/state`
-- `POST /execute`
-- `POST /explain`
-- `POST /act`
-- `POST /act/sequence`
-- `POST /workflow/run`
-- `POST /task/semantic`
-- `POST /task/plan`
-- `POST /predict`
-- `POST /policy`
-- `POST /control/start`
-- `POST /control/stop`
-- `POST /stream/control`
-- `POST /ucp/act`
+- `GET /ure/world-model`
+- `GET /ure/affordances`
+- `GET /ure/decision`
+- `GET /ure/metrics`
+- `GET /ure/experience`
+- `POST /ure/step`
+- `POST /ure/demo`
 
-## Example Payloads
-
-Execute:
+## URE Example Request
 
 ```json
 {
-  "action": "create",
-  "path": "notes.txt"
+  "execute": "true",
+  "decision_budget_us": "1000"
 }
 ```
 
-One-step action:
+`POST /ure/step` returns world model, affordances, reflex decision, timing, and optional action execution result.
 
-```json
-{
-  "action": "activate",
-  "target": "Command Palette",
-  "context": {
-    "app": "code",
-    "domain": "generic"
-  }
-}
-```
-
-Sequence:
-
-```json
-{
-  "steps": [
-    { "action": "activate", "target": "Save" },
-    { "action": "activate", "target": "Save" }
-  ]
-}
-```
-
-Semantic request:
-
-```json
-{
-  "goal": "click Save then click Save",
-  "context": {
-    "domain": "generic"
-  }
-}
-```
-
-Policy update:
-
-```json
-{
-  "allow_execute": "true",
-  "allow_file_ops": "true",
-  "allow_system_changes": "false"
-}
-```
-
-## Adapter Ecosystem
-
-Adapters are execution backends that expose capabilities and execute intents through a common contract.
-
-- discovery: `GetCapabilities(...)`
-- dispatch: `CanExecute(...)`, `Execute(...)`
-- quality profile: `GetScore()`
-- metadata discovery: `GetMetadata()`
-- optional reactive hook: `Subscribe(...)`
-
-See [docs/adapter_sdk.md](docs/adapter_sdk.md) for implementation guidance.
-
-## Testing Strategy
-
-The test suite includes unit, integration, scenario, and stress coverage.
-
-Key validations include:
-
-- deterministic resolver outcomes and action ambiguity handling
-- reveal-contract and fallback behavior
-- API hardening for malformed payloads and route contracts
-- temporal/frame stream and graph delta consistency
-- policy gating and semantic/sequence route behavior
-- telemetry, persistence, latency, and percentile reporting
-
-## Engineering Rules
-
-This repository follows the IEE constitution:
-
-- system over feature
-- determinism over heuristics
-- event-driven design
-- strict modular boundaries
-- mandatory documentation sync after each iteration
+## Documentation
 
 Primary docs:
 
@@ -301,8 +189,9 @@ Primary docs:
 - [docs/parity.md](docs/parity.md)
 - [docs/issues_and_errors.md](docs/issues_and_errors.md)
 - [docs/context_handoff.md](docs/context_handoff.md)
-- [docs/ai_sdk.md](docs/ai_sdk.md)
-- [docs/adapter_sdk.md](docs/adapter_sdk.md)
+- [docs/universal_reflex_engine.md](docs/universal_reflex_engine.md)
+- [docs/affordance_model.md](docs/affordance_model.md)
+- [docs/world_model_spec.md](docs/world_model_spec.md)
 
 ## License
 

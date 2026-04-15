@@ -15,6 +15,7 @@
 #include "InteractionGraph.h"
 #include "IntentRegistry.h"
 #include "PlatformLayer.h"
+#include "UniversalReflexEngine.h"
 #include "Telemetry.h"
 
 namespace iee {
@@ -44,6 +45,8 @@ private:
     mutable std::mutex graphHistoryMutex_;
     std::deque<InteractionGraph> graphHistory_;
     TemporalStateEngine temporalStateEngine_;
+    mutable std::mutex reflexMutex_;
+    UniversalReflexAgent reflexAgent_;
 };
 
 }  // namespace iee

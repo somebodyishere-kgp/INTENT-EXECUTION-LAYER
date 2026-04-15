@@ -1,83 +1,67 @@
-# IEE v2.0 Status
+# IEE v3.0 Status
 
 ## Date
-2026-04-08
+2026-04-15
 
 ## Current State
-IEE has been upgraded to v2.0 (Phase 11 platformization) with additive architecture changes over v1.9.
+IEE has been upgraded to v3.0 (Phase 13.5) with Universal Reflex Engine (URE) capabilities layered on top of v2.x.
 
 The runtime now supports:
 
-- deterministic self-healing execution attempts
-- temporal unified-state history and frame consistency
-- sequence and workflow execution endpoints
-- semantic task bridge for deterministic semantic-to-plan conversion
-- execution memory for node-level success biasing
-- adapter metadata discovery for ecosystem clients
-- expanded hybrid perception output fields
-- policy-gated execution controls
-- UCP action/state envelopes
-- latency percentile and frame coherency telemetry APIs
+- universal structural feature extraction from UIG + screen + cursor
+- per-frame world model construction with temporal consistency
+- deterministic affordance inference
+- universal meta-policy reflex decisions
+- bounded exploration for unknown environments
+- experience-memory adaptation for repeated outcomes
+- safety-gated reflex execution via existing action contracts
+- reflex observability via dedicated URE API routes
 
-## Completed v2.0 Work
+## Completed v3.0 Work
 
-### Core platform module
-- Added `core/platform` with:
-  - `PermissionPolicyStore`
-  - `ExecutionMemoryStore`
-  - `TemporalStateEngine`
-  - `IntentSequenceExecutor`
-  - `WorkflowExecutor`
-  - `SemanticPlannerBridge`
-  - UCP envelope serializers
+### Core URE module
+- Added `core/reflex` module with:
+  - `UniversalFeatureExtractor`
+  - `WorldModelBuilder`
+  - `AffordanceEngine`
+  - `MetaPolicyEngine`
+  - `ExplorationEngine`
+  - `UniversalReflexAgent`
 
-### Action interface upgrades
-- Added recovery contracts (`RecoveryAttempt`, `recovered`, `recoveryAttempts`).
-- Added `SelfHealingExecutor` for bounded deterministic recovery.
-- Added policy checks and execution-memory recording in `ActionExecutor::Act`.
+### Build wiring
+- Added `core/reflex/src/UniversalReflexEngine.cpp` to `iee_core`.
+- Added `core/reflex/include` to include directories.
 
-### Execution and adapter ecosystem
-- Added `AdapterMetadata` contract.
-- Added metadata listing in `AdapterRegistry` and forwarding in `ExecutionEngine`.
+### API integration
+- Added routes:
+  - `GET /ure/world-model`
+  - `GET /ure/affordances`
+  - `GET /ure/decision`
+  - `GET /ure/metrics`
+  - `GET /ure/experience`
+  - `POST /ure/step`
+  - `POST /ure/demo`
 
-### Perception and telemetry upgrades
-- Added lightweight text/grouping region metrics to environment perception.
-- Added latency percentile snapshots (`p50/p95/p99/p999`).
+### Safety and action execution
+- Reflex step execution is policy-aware (`PermissionPolicyStore`).
+- Optional reflex execution path reuses `ActionExecutor` and existing verification behavior.
 
-### API platformization
-- Added and wired v2 routes:
-  - `GET /execution/memory`
-  - `GET /adapters`
-  - `GET /state/history`
-  - `GET /policy`, `POST /policy`
-  - `GET /perf/percentiles`
-  - `GET /perf/frame-consistency`
-  - `POST /act/sequence`
-  - `POST /workflow/run`
-  - `POST /task/semantic`
-  - `POST /ucp/act`
-  - `GET /ucp/state`
-
-### Testing updates
-- Expanded `integration_api_hardening` to assert v2 route behavior:
-  - policy update/enforcement
-  - sequence/workflow/semantic routes
-  - UCP route envelopes
-  - adapter metadata and execution memory endpoints
-  - percentile and frame consistency endpoints
+### Testing
+- Added `tests/integration_universal_reflex.cpp`.
+- Added CMake/CTest registration for the new integration test.
 
 ## Verification
 
 - Build: `cmake --build build --config Release`
 - Test: `ctest --test-dir build -C Release --output-on-failure`
-- Result: 19/19 tests passed in Release.
+- Result: 20/20 tests passed in Release.
 
 ## Remaining Non-Blocking Gaps
 
-1. Policy parser currently accepts flat string values only (intentional for deterministic parser scope).
-2. Semantic bridge is deterministic-rule based and currently does not call external model runtimes.
-3. Execution memory is process-local and not yet persisted across restarts.
+1. URE is currently API-driven (on-demand step) and not yet injected directly into the control runtime frame loop.
+2. Reflex telemetry is currently exposed through URE metrics snapshot, not yet merged into the primary telemetry model.
+3. Demo flows are route-level (`POST /ure/demo`) and deterministic, but not yet scripted as CLI scenario commands.
 
 ## Release Note Summary
 
-v2.0 establishes IEE as a platform layer instead of only an action/runtime layer, while preserving v1.x contracts and deterministic operational boundaries.
+v3.0 introduces a deterministic Universal Reflex Engine that can infer, decide, and optionally execute actions in unseen environments using structure-driven intelligence, while preserving v2.x execution contracts and safety boundaries.

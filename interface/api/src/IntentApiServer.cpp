@@ -1174,6 +1174,15 @@ LatencyBreakdownSample BuildPerfActivationSample(double targetBudgetMs, std::uin
     return sample;
 }
 
+ReflexSafetyPolicy BuildReflexSafetyPolicy(const PermissionPolicy& policy) {
+    ReflexSafetyPolicy safety;
+    safety.allowExecute = policy.allow_execute;
+    safety.allowFileOps = policy.allow_file_ops;
+    safety.allowSystemChanges = policy.allow_system_changes;
+    safety.allowExploration = policy.allow_execute;
+    return safety;
+}
+
 bool CaptureEnvironmentState(
     const std::unique_ptr<ControlRuntime>& controlRuntime,
     const std::shared_ptr<EnvironmentAdapter>& fallbackAdapter,
@@ -2562,6 +2571,192 @@ std::string IntentApiServer::HandleRequest(const std::string& request) {
         AIStateViewProjector projector;
         const AIStateView view = projector.Build(state, runtimeActive);
         return BuildResponse(200, "OK", SerializeUcpStateEnvelope(view));
+    }
+
+    if (method == "GET" && path == "/ure/world-model") {
+        bool runtimeActive = false;
+        EnvironmentState state;
+        if (!CaptureEnvironmentState(controlRuntime_, streamEnvironmentAdapter_, &state, &runtimeActive)) {
+            return BuildErrorResponse(503, "Service Unavailable", "ure_state_unavailable", "Unable to capture environment state");
+        }
+
+        EnsureUnifiedState(&state);
+        temporalStateEngine_.Record(state);
+
+        const ReflexSafetyPolicy safety = BuildReflexSafetyPolicy(PermissionPolicyStore::Get());
+        ReflexStepResult step;
+        {
+            std::lock_guard<std::mutex> lock(reflexMutex_);
+            step = reflexAgent_.Step(state, safety, 1000);
+        }
+
+        std::ostringstream json;
+        json << "{";
+        json << "\"runtime_active\":" << (runtimeActive ? "true" : "false") << ",";
+        json << "\"world_model\":" << SerializeWorldModelJson(step.worldModel);
+        json << "}";
+        return BuildResponse(200, "OK", json.str());
+    }
+
+    if (method == "GET" && path == "/ure/affordances") {
+        bool runtimeActive = false;
+        EnvironmentState state;
+        if (!CaptureEnvironmentState(controlRuntime_, streamEnvironmentAdapter_, &state, &runtimeActive)) {
+            return BuildErrorResponse(503, "Service Unavailable", "ure_state_unavailable", "Unable to capture environment state");
+        }
+
+        EnsureUnifiedState(&state);
+        temporalStateEngine_.Record(state);
+
+        const ReflexSafetyPolicy safety = BuildReflexSafetyPolicy(PermissionPolicyStore::Get());
+        ReflexStepResult step;
+        {
+            std::lock_guard<std::mutex> lock(reflexMutex_);
+            step = reflexAgent_.Step(state, safety, 1000);
+        }
+
+        std::ostringstream json;
+        json << "{";
+        json << "\"runtime_active\":" << (runtimeActive ? "true" : "false") << ",";
+        json << "\"affordances\":" << SerializeAffordancesJson(step.affordances);
+        json << "}";
+        return BuildResponse(200, "OK", json.str());
+    }
+
+    if (method == "GET" && path == "/ure/decision") {
+        bool runtimeActive = false;
+        EnvironmentState state;
+        if (!CaptureEnvironmentState(controlRuntime_, streamEnvironmentAdapter_, &state, &runtimeActive)) {
+            return BuildErrorResponse(503, "Service Unavailable", "ure_state_unavailable", "Unable to capture environment state");
+        }
+
+        EnsureUnifiedState(&state);
+        temporalStateEngine_.Record(state);
+
+        const ReflexSafetyPolicy safety = BuildReflexSafetyPolicy(PermissionPolicyStore::Get());
+        ReflexStepResult step;
+        {
+            std::lock_guard<std::mutex> lock(reflexMutex_);
+            step = reflexAgent_.Step(state, safety, 1000);
+        }
+
+        std::ostringstream json;
+        json << "{";
+        json << "\"runtime_active\":" << (runtimeActive ? "true" : "false") << ",";
+        json << "\"decision\":" << SerializeReflexDecisionJson(step.decision) << ",";
+        json << "\"decision_time_us\":" << step.decisionTimeUs << ",";
+        json << "\"decision_within_budget\":" << (step.decisionWithinBudget ? "true" : "false");
+        json << "}";
+        return BuildResponse(200, "OK", json.str());
+    }
+
+    if (method == "GET" && path == "/ure/metrics") {
+        ReflexMetricsSnapshot metrics;
+        {
+            std::lock_guard<std::mutex> lock(reflexMutex_);
+            metrics = reflexAgent_.Metrics();
+        }
+        return BuildResponse(200, "OK", SerializeReflexMetricsJson(metrics));
+    }
+
+    if (method == "GET" && path == "/ure/experience") {
+        const std::size_t limit = ReadQuerySize(query, "limit", 64U, 1U, 512U);
+
+        std::vector<ExperienceEntry> entries;
+        {
+            std::lock_guard<std::mutex> lock(reflexMutex_);
+            entries = reflexAgent_.Experience(limit);
+        }
+        return BuildResponse(200, "OK", SerializeExperienceEntriesJson(entries));
+    }
+
+    if (method == "POST" && (path == "/ure/step" || path == "/ure/demo")) {
+        std::map<std::string, std::string> payload;
+        if (!body.empty()) {
+            std::string jsonError;
+            if (!ParseFlatJsonObject(body, &payload, &jsonError)) {
+                return BuildErrorResponse(400, "Bad Request", "invalid_json", jsonError);
+            }
+        }
+
+        bool execute = false;
+        const std::string executeRaw = ReadPayloadValue(payload, {"execute", "run"});
+        ParseBoolString(executeRaw, &execute);
+
+        int decisionBudgetUs = 1000;
+        const std::string budgetRaw = ReadPayloadValue(payload, {"decision_budget_us", "decisionBudgetUs"});
+        int parsedBudget = 0;
+        if (ParseInt32(budgetRaw, &parsedBudget) && parsedBudget > 0) {
+            decisionBudgetUs = std::clamp(parsedBudget, 100, 20000);
+        }
+
+        const std::string scenario = path == "/ure/demo" ? ReadPayloadValue(payload, {"scenario"}) : "";
+
+        bool runtimeActive = false;
+        EnvironmentState state;
+        if (!CaptureEnvironmentState(controlRuntime_, streamEnvironmentAdapter_, &state, &runtimeActive)) {
+            return BuildErrorResponse(503, "Service Unavailable", "ure_state_unavailable", "Unable to capture environment state");
+        }
+
+        EnsureUnifiedState(&state);
+        temporalStateEngine_.Record(state);
+
+        const PermissionPolicy policy = PermissionPolicyStore::Get();
+        const ReflexSafetyPolicy safety = BuildReflexSafetyPolicy(policy);
+
+        ReflexStepResult step;
+        {
+            std::lock_guard<std::mutex> lock(reflexMutex_);
+            step = reflexAgent_.Step(state, safety, decisionBudgetUs);
+        }
+
+        bool executed = false;
+        ActionExecutionResult actionResult;
+        bool hasActionResult = false;
+        std::string executionReason = "not_requested";
+
+        if (execute) {
+            if (!policy.allow_execute) {
+                executionReason = "policy_denied";
+            } else if (!step.decision.executable || step.decision.action.empty() || step.decision.targetLabel.empty()) {
+                executionReason = "no_executable_reflex_action";
+            } else {
+                ActionRequest reflexRequest;
+                reflexRequest.action = step.decision.action;
+                reflexRequest.target = step.decision.targetLabel;
+                reflexRequest.context.domain = "generic";
+
+                ActionExecutor actionExecutor(registry_, executionEngine_, telemetry_);
+                actionResult = actionExecutor.Act(reflexRequest);
+                hasActionResult = true;
+                executed = actionResult.status == "success";
+                executionReason = executed ? "executed" : actionResult.reason;
+
+                {
+                    std::lock_guard<std::mutex> lock(reflexMutex_);
+                    reflexAgent_.RecordExecutionOutcome(step.decision, executed);
+                }
+            }
+        }
+
+        std::ostringstream json;
+        json << "{";
+        json << "\"runtime_active\":" << (runtimeActive ? "true" : "false") << ",";
+        if (!scenario.empty()) {
+            json << "\"scenario\":\"" << EscapeJson(scenario) << "\",";
+        }
+        json << "\"step\":" << SerializeReflexStepResultJson(step) << ",";
+        json << "\"executed\":" << (executed ? "true" : "false") << ",";
+        json << "\"execution_reason\":\"" << EscapeJson(executionReason) << "\",";
+        if (hasActionResult) {
+            json << "\"action_result\":" << SerializeActionExecutionResultJson(actionResult);
+        } else {
+            json << "\"action_result\":null";
+        }
+        json << "}";
+
+        const int statusCode = execute && hasActionResult && !executed ? 500 : 200;
+        return BuildResponse(statusCode, statusCode == 200 ? "OK" : "Internal Server Error", json.str());
     }
 
     if (method == "POST" && path == "/task/plan") {

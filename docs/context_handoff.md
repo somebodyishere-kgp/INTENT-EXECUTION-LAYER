@@ -1,64 +1,64 @@
-# IEE Context Handoff (v2.0)
+# IEE Context Handoff (v3.0)
 
 ## 1. What Are We Building
-IEE is a deterministic native execution/control plane that maps live software state into executable intents and verified action contracts.
+IEE is a deterministic execution/control layer for software environments.
 
-v2.0 (Phase 11) extends v1.9 from an action-enabled runtime to a platformized execution layer with policy, memory, semantic orchestration, temporal state intelligence, and protocolized envelopes.
+v3.0 adds Universal Reflex Engine (URE): a structure-driven reflex intelligence loop for unseen environments, without per-step LLM usage.
 
 ## 2. Current State
 Completed:
 
-- New `core/platform` module with policy, memory, temporal, sequence/workflow, semantic, and UCP contracts.
-- Action layer upgraded with self-healing recovery and richer execution metadata.
-- Adapter ecosystem metadata surfaced through execution engine and API.
-- Perception model expanded with lightweight text/grouping region features.
-- Telemetry expanded with percentile snapshots and serialization APIs.
-- API server expanded with phase routes:
-  - `/execution/memory`, `/adapters`, `/state/history`
-  - `/policy` (GET/POST)
-  - `/perf/percentiles`, `/perf/frame-consistency`
-  - `/act/sequence`, `/workflow/run`, `/task/semantic`
-  - `/ucp/act`, `/ucp/state`
-- Mandatory docs and README synchronized to v2.0.
-- Integration API hardening expanded for new routes.
+- Added new URE core module at `core/reflex`.
+- Implemented feature extraction, world modeling, affordance mapping, meta-policy decisions, bounded exploration, and experience memory.
+- Added URE API routes for model/affordance/decision/metrics/experience/step/demo.
+- Integrated optional reflex action execution via existing `ActionExecutor`.
+- Added policy-aware execution gating.
+- Added integration test coverage for URE routes.
+- Verified Release build and full CTest suite.
 
 Partially built:
 
-- Persisted execution-memory backend (currently in-memory only).
-- Extended semantic provider integration (currently deterministic-rule path).
+- Continuous control-runtime reflex embedding (frame-loop injection) is not yet enabled.
+- Persisted experience memory backend is not yet implemented.
 
 ## 3. Last Work Done
-- Fixed two v2 compile blockers:
-  - invalid node field access in self-healing path
-  - missing UTF helper in perception translation unit
-- Rebuilt Release successfully.
-- Ran full Release tests (19/19 pass).
-- Extended `tests/integration_api_hardening.cpp` with v2 route assertions.
-- Updated required docs and README to v2.0 platformization state.
+- Created:
+  - `core/reflex/include/UniversalReflexEngine.h`
+  - `core/reflex/src/UniversalReflexEngine.cpp`
+  - `tests/integration_universal_reflex.cpp`
+- Updated:
+  - `CMakeLists.txt`
+  - `interface/api/include/IntentApiServer.h`
+  - `interface/api/src/IntentApiServer.cpp`
+  - required docs and README
+- Validation:
+  - `cmake --build build --config Release`
+  - `ctest --test-dir build -C Release --output-on-failure`
+  - result: 20/20 tests passed.
 
 ## 4. Current Problem
-No blocking compile/test issue.
+No active compile/test blocker.
 
-Known environment caveat:
-- VS Code CMake Tools integration returned configure failures in this session; command-line build/test remained green.
+Current scope limitation:
+- URE executes per API step; continuous reflex execution in control runtime loop remains future work.
 
 ## 5. Next Plan
-1. Add persistent execution-memory storage with bounded retention.
-2. Add semantic provider plug-in interface while preserving deterministic fallback.
-3. Expand UCP versioning/negotiation contract beyond v1 envelopes.
-4. Add dedicated scenario test for self-healing alternate-node success path.
-5. Add CLI wrappers for selected v2 API routes (`policy`, `sequence`, `workflow`, `semantic`, `ucp`) if required by operators.
+1. Integrate URE decision step into `ControlRuntime::RunLoop` behind feature flag.
+2. Add dedicated reflex telemetry channel into `Telemetry` snapshots and percentiles.
+3. Add persistent disk-backed experience memory with bounded retention.
+4. Add scenario stress tests for high-density dynamic environments.
+5. Add CLI command group for URE (`ure model`, `ure step`, `ure metrics`, `ure demo`).
 
 ## 6. Key Decisions Taken
-- Preserve v1.x compatibility; all v2 work is additive.
-- Keep deterministic bounded runtime behavior for recovery and planning.
-- Centralize platform concerns in `core/platform` rather than spreading ad-hoc logic.
-- Enforce policy checks before execution at API and action layers.
-- Keep semantic bridge operational without external model dependencies.
+- Keep v3 additive; no breaking v2 contracts.
+- Keep reflex logic deterministic and bounded.
+- Keep inference domain-agnostic and structural.
+- Reuse existing action contracts for safe execution.
+- Gate execution/exploration via central policy store.
 
 ## 7. Multi-Agent Contribution
-- Architecture agent (Explore sub-agent): mapped extension points and produced implementation blueprint for v2 platformization.
-- Core implementation agent: implemented platform module, action/API/telemetry/perception/adapter integrations.
-- Debugging agent: resolved compile blockers and rebuilt validated binaries.
-- Documentation agent: synchronized README and required docs (`architecture`, `status`, `parity`, `issues_and_errors`, `context_handoff`, `ai_sdk`, `adapter_sdk`).
-- Refactoring/testing agent: expanded integration hardening assertions for v2 routes and revalidated full suite.
+- Architecture agent: produced additive integration blueprint for URE.
+- Core implementation agent: implemented URE module and API routes.
+- Debugging agent: resolved build/test integration issues and enum mismatch.
+- Refactoring agent: tightened route safety and naming clarity.
+- Documentation agent: synchronized required docs and added new URE specs.

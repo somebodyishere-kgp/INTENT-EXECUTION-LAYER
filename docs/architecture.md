@@ -1,133 +1,113 @@
-# IEE v2.0 Architecture
+# IEE v3.0 Architecture
 
 ## Purpose
-IEE v2.0 platformizes the v1.x runtime into a deterministic, extensible control platform. The core objective is to keep v1.x execution guarantees intact while adding self-healing, semantic intent mapping, temporal state memory, policy controls, and ecosystem-level adapter metadata.
+IEE v3.0 introduces the Universal Reflex Engine (URE): a deterministic, domain-agnostic reflex intelligence layer that can infer action opportunities from unseen environments without per-step LLM calls.
 
-## v2.0 Platform Layer
+The architecture remains additive over v2.x and preserves existing execution contracts.
 
-New module:
-
-- `core/platform/include/PlatformLayer.h`
-- `core/platform/src/PlatformLayer.cpp`
-
-This module provides additive platform contracts:
-
-- `PermissionPolicyStore`
-- `ExecutionMemoryStore`
-- `TemporalStateEngine`
-- `IntentSequenceExecutor`
-- `WorkflowExecutor`
-- `SemanticPlannerBridge`
-- UCP envelope serializers
-
-## Pillar Mapping (Phase 11)
-
-1. Self-healing execution
-- `SelfHealingExecutor` in `core/action` provides bounded, deterministic recovery.
-- Recovery sequence is fixed: `retry` -> `alternate_node` -> `fallback_reveal`.
-
-2. Temporal unified state
-- `TemporalStateEngine` records unified state snapshots and transitions.
-- Adds stability and frame consistency computations.
-
-3. Multi-step execution
-- `IntentSequenceExecutor` runs deterministic step plans.
-- API: `POST /act/sequence`.
-
-4. Semantic interface
-- `SemanticPlannerBridge` parses semantic goals and emits deterministic plan envelopes.
-- API: `POST /task/semantic`.
-
-5. Experience memory
-- `ExecutionMemoryStore` records per-node success/failure/fallback/latency.
-- Target resolution includes execution-memory success bias.
-
-6. Adapter ecosystem
-- `AdapterMetadata` contract and `AdapterRegistry::ListMetadata()`.
-- API: `GET /adapters`.
-
-7. Hybrid perception
-- `EnvironmentPerception` now carries lightweight text/grouping/region labels.
-
-8. Policy layer
-- Global policy store + checks:
-  - `GET /policy`
-  - `POST /policy`
-- Enforcement is integrated in `ActionExecutor` and `/execute` API path.
-
-9. Workflow orchestration
-- `WorkflowExecutor` wraps deterministic sequence execution behavior.
-- API: `POST /workflow/run`.
-
-10. UCP protocol
-- Added protocol envelopes:
-  - `POST /ucp/act`
-  - `GET /ucp/state`
-
-11. Performance + scale metrics
-- `LatencyPercentilesSnapshot` with `p50/p95/p99/p999`.
-- API: `GET /perf/percentiles`.
-- Frame consistency API: `GET /perf/frame-consistency`.
-
-12. Demonstration surfaces
-- API now exposes full phase contracts for semantic planning, policy gating, sequence/workflow execution, and UCP envelopes.
-
-## Updated Data Flow
+## URE Pipeline
 
 ```text
-Observer -> Intent Registry -> InteractionGraph/TaskPlanner -> Action Interface
-                                                        |            |
-                                                        |            v
-                                                        |      Execution Contract
-                                                        |            |
-Environment Adapter -> Unified EnvironmentState --------+------------+----> ExecutionEngine -> Adapters
-        |                                                                |
-        +--> LightweightPerception + ScreenState                           +--> AdapterMetadata
+EnvironmentState (ScreenState + UIG)
         |
-        +--> TemporalStateEngine -> State history / transition / consistency
-
-Platform Layer
-  - policy checks
-  - execution memory
-  - semantic bridge
-  - sequence/workflow
-  - UCP serialization
-
-Telemetry
-  - traces
-  - latency + performance contract
-  - percentile snapshots
-  - persistence
+        v
+UniversalFeatureExtractor
+        |
+        v
+WorldModelBuilder
+        |
+        v
+AffordanceEngine
+        |
+        v
+MetaPolicyEngine
+        |
+        v
+UniversalReflexAgent
+        |
+        +--> ExplorationEngine
+        +--> ExperienceMemory
+        +--> Optional /act execution
 ```
 
-## API Surface (v2.0)
+## New Core Module
 
-New/expanded routes:
+Added:
 
-- `GET /execution/memory`
-- `GET /adapters`
-- `GET /state/history`
-- `GET /policy`
-- `POST /policy`
-- `GET /perf/percentiles`
-- `GET /perf/frame-consistency`
-- `POST /act/sequence`
-- `POST /workflow/run`
-- `POST /task/semantic`
-- `POST /ucp/act`
-- `GET /ucp/state`
+- `core/reflex/include/UniversalReflexEngine.h`
+- `core/reflex/src/UniversalReflexEngine.cpp`
 
-## Compatibility and Determinism
+The module includes the following primitives:
 
-- v1.x routes and contracts remain intact.
-- Runtime behavior remains bounded:
-  - fixed candidate limits
-  - deterministic tie-breaks
-  - bounded retry/recovery attempts
-- No heavy model dependency is introduced into core runtime.
+- `UniversalFeature`
+- `WorldObject`, `WorldModel`, `Relationship`
+- `Affordance`
+- `PolicyRule`
+- `ExplorationResult`
+- `ExperienceEntry`
+- `UniversalReflexAgent`
+
+## Integration Points
+
+### Runtime state inputs
+- Uses `EnvironmentState`, `ScreenState`, and `InteractionGraph` as deterministic input signals.
+- No app-specific adapters are required for reflex inference.
+
+### Action integration
+- Reflex decisions can be executed through existing `ActionExecutor` (`POST /act` contract path).
+- Reveal/verification behavior remains enforced by existing action and execution contracts.
+
+### Policy integration
+- URE execution and exploration are gated by `PermissionPolicyStore`.
+- Unsafe execution is blocked before invoking actions.
+
+### API integration
+Added routes in API server:
+
+- `GET /ure/world-model`
+- `GET /ure/affordances`
+- `GET /ure/decision`
+- `GET /ure/metrics`
+- `GET /ure/experience`
+- `POST /ure/step`
+- `POST /ure/demo`
+
+## Design Rules Enforced
+
+- No heavy ML/training loops in core runtime.
+- No LLM call in reflex loop.
+- Deterministic sorting/tie-break behavior.
+- Bounded relationship generation and exploration.
+- Backward-compatible additive integration with v2 routes.
+
+## Performance Model
+
+URE captures the following timing signals per step:
+
+- decision time (microseconds)
+- total loop time (microseconds)
+- decision budget compliance (`decision_within_budget`)
+
+Aggregated metrics:
+
+- average decision latency
+- p95 decision latency
+- average loop latency
+- over-budget decision count
+- exploratory decision count
+
+## Safety Model
+
+Reflex execution model is safety constrained:
+
+1. Build decision candidate from structural signals only.
+2. Check policy (`allow_execute`) before action execution.
+3. Use bounded exploration only when execution-safe.
+4. Record outcomes and bias against repeated failures.
 
 ## Validation Baseline
 
-- Configure: `cmake -S . -B build`
 - Build: `cmake --build build --config Release`
 - Test: `ctest --test-dir build -C Release --output-on-failure`
+
+Current baseline includes a dedicated URE integration test.

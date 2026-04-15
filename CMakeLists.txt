@@ -38,6 +38,7 @@ add_library(iee_core
     core/interaction/src/TaskInterface.cpp
     core/observer/src/ObserverEngine.cpp
     core/platform/src/PlatformLayer.cpp
+    core/reflex/src/UniversalReflexEngine.cpp
     core/telemetry/src/Telemetry.cpp
     interface/api/src/IntentApiServer.cpp
     interface/sdk/src/IEEClient.cpp
@@ -53,6 +54,7 @@ target_include_directories(iee_core PUBLIC
     core/interaction/include
     core/observer/include
     core/platform/include
+    core/reflex/include
     core/telemetry/include
     interface/api/include
     interface/cli/include
@@ -144,6 +146,12 @@ add_executable(iee_test_integration_api_hardening
 target_include_directories(iee_test_integration_api_hardening PRIVATE tests)
 target_link_libraries(iee_test_integration_api_hardening PRIVATE iee_core)
 
+add_executable(iee_test_integration_universal_reflex
+    tests/integration_universal_reflex.cpp
+)
+target_include_directories(iee_test_integration_universal_reflex PRIVATE tests)
+target_link_libraries(iee_test_integration_universal_reflex PRIVATE iee_core)
+
 add_executable(iee_test_stress_execution
     tests/stress_execution_loop.cpp
 )
@@ -203,6 +211,7 @@ add_test(NAME unit_screen_perception COMMAND iee_test_unit_screen_perception)
 add_test(NAME unit_interaction_graph COMMAND iee_test_unit_interaction_graph)
 add_test(NAME integration_failure_injection COMMAND iee_test_integration_failure_injection)
 add_test(NAME integration_api_hardening COMMAND iee_test_integration_api_hardening)
+add_test(NAME integration_universal_reflex COMMAND iee_test_integration_universal_reflex)
 add_test(NAME stress_execution_loop COMMAND iee_test_stress_execution)
 add_test(NAME stress_screen_pipeline COMMAND iee_test_stress_screen_pipeline)
 add_test(NAME integration_control_runtime COMMAND iee_test_integration_control_runtime)
