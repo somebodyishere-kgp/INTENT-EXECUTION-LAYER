@@ -18,10 +18,11 @@ Completed:
 - Extended /ure/status, /ure/step, and /ure/demo payloads with coordinated runtime diagnostics.
 - Extended CLI debug and realtime demo workflows for bundle/continuous visibility.
 - Extended integration tests for new routes and richer goal payload behavior.
+- Closed continuous move execution gap by enabling UI move intent validation and InputAdapter native move/fire/interact handling.
 
 Partially built:
 
-- Native adapter-specific analog control bindings are still represented through generic intent params.
+- InputAdapter now executes continuous vectors; additional adapter-specific analog implementations are still pending.
 - Predictive model remains deterministic short-horizon extrapolation.
 
 ## 3. Last Work Done
@@ -43,6 +44,10 @@ Updated:
 - tests/integration_universal_reflex.cpp
 - tests/integration_api_hardening.cpp
 - CMakeLists.txt
+- core/intent/src/Intent.cpp
+- core/execution/include/Adapter.h
+- core/execution/src/Adapter.cpp
+- tests/unit_intent_schema.cpp
 - required architecture/status/parity/issues/handoff/runtime docs
 
 Validation activity:
@@ -58,7 +63,7 @@ Operational limitation:
 - VS Code CMake extension configure path may intermittently fail in this environment despite healthy direct cmake/ctest runs.
 
 ## 5. Next Plan
-1. Add adapter-level native handling for continuous control vectors where supported.
+1. Expand continuous adapter support beyond InputAdapter (domain-specific native paths).
 2. Add long-run stress tests for coordination stability and persistence churn.
 3. Expand prediction quality with richer temporal cues while keeping determinism.
 4. Add policy controls for specialist-agent weighting and bundle source throttling.

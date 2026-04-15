@@ -414,7 +414,7 @@ bool InputAdapter::CanExecute(const Intent& intent) const {
     }
 
     return intent.action == IntentAction::Activate || intent.action == IntentAction::SetValue ||
-        intent.action == IntentAction::Select;
+        intent.action == IntentAction::Select || intent.action == IntentAction::Move;
 }
 
 ExecutionResult InputAdapter::Execute(const Intent& intent) {
@@ -482,6 +482,69 @@ ExecutionResult InputAdapter::Execute(const Intent& intent) {
         result.message = ok ? "Text input sent" : "Text input failed";
         break;
     }
+    case IntentAction::Move: {
+        const float moveX = ReadAxisParam(intent, "move_x");
+        const float moveY = ReadAxisParam(intent, "move_y");
+        const float aimDx = ReadAxisParam(intent, "aim_dx");
+        const float aimDy = ReadAxisParam(intent, "aim_dy");
+        const float lookDx = ReadAxisParam(intent, "look_dx");
+        const float lookDy = ReadAxisParam(intent, "look_dy");
+        const bool fire = ReadBoolParam(intent, "fire", false);
+        const bool interact = ReadBoolParam(intent, "interact", false);
+
+        const bool hasAxisSignal =
+            std::abs(moveX) > 0.001F ||
+            std::abs(moveY) > 0.001F ||
+            std::abs(aimDx) > 0.001F ||
+            std::abs(aimDy) > 0.001F ||
+            std::abs(lookDx) > 0.001F ||
+            std::abs(lookDy) > 0.001F;
+
+        if (!hasAxisSignal && !fire && !interact) {
+            result.status = ExecutionStatus::FAILED;
+            result.verified = false;
+            result.message = "Move intent missing continuous control parameters";
+            finalize(&result);
+            return result;
+        }
+
+        const int analogStepPx = ReadTimingParamMs(intent, "analog_step_px", 56, 400);
+
+        const float combinedX = std::clamp(moveX + (aimDx * 0.75F) + (lookDx * 0.50F), -2.0F, 2.0F);
+        const float combinedY = std::clamp(moveY + (aimDy * 0.75F) + (lookDy * 0.50F), -2.0F, 2.0F);
+        const int deltaX = static_cast<int>(std::round(combinedX * static_cast<float>(analogStepPx)));
+        const int deltaY = static_cast<int>(std::round(combinedY * static_cast<float>(analogStepPx)));
+
+        bool moved = true;
+        if (deltaX != 0 || deltaY != 0) {
+            moved = SendRelativeMouseMove(deltaX, deltaY);
+        }
+
+        bool clicked = false;
+        if (moved && (fire || interact)) {
+            POINT cursor{};
+            if (GetCursorPos(&cursor)) {
+                clicked = SendLeftClick(cursor.x, cursor.y, holdMs);
+            }
+        }
+
+        const bool applied = moved && ((deltaX != 0 || deltaY != 0) || clicked);
+        result.verified = applied;
+        result.status = applied ? ExecutionStatus::PARTIAL : ExecutionStatus::FAILED;
+
+        if (applied) {
+            if (clicked && (deltaX != 0 || deltaY != 0)) {
+                result.message = "Continuous move and click signal applied";
+            } else if (clicked) {
+                result.message = fire ? "Continuous fire signal applied" : "Continuous interact signal applied";
+            } else {
+                result.message = "Continuous move signal applied";
+            }
+        } else {
+            result.message = "Continuous move signal failed";
+        }
+        break;
+    }
     default:
         result.status = ExecutionStatus::FAILED;
         result.verified = false;
@@ -531,6 +594,41 @@ int InputAdapter::ReadTimingParamMs(
     return parsed;
 }
 
+float InputAdapter::ReadAxisParam(const Intent& intent, std::string_view key) {
+    const std::wstring raw = intent.params.Get(key);
+    if (raw.empty()) {
+        return 0.0F;
+    }
+
+    const std::string narrow = Narrow(raw);
+    if (narrow.empty()) {
+        return 0.0F;
+    }
+
+    try {
+        const float parsed = std::stof(narrow);
+        return std::clamp(parsed, -1.0F, 1.0F);
+    } catch (...) {
+        return 0.0F;
+    }
+}
+
+bool InputAdapter::ReadBoolParam(const Intent& intent, std::string_view key, bool defaultValue) {
+    const std::wstring raw = intent.params.Get(key);
+    if (raw.empty()) {
+        return defaultValue;
+    }
+
+    const std::string normalized = LowerAscii(Narrow(raw));
+    if (normalized == "1" || normalized == "true" || normalized == "yes" || normalized == "on") {
+        return true;
+    }
+    if (normalized == "0" || normalized == "false" || normalized == "no" || normalized == "off") {
+        return false;
+    }
+    return defaultValue;
+}
+
 bool InputAdapter::SendUnicodeText(const std::wstring& text, int holdMs) {
     for (const wchar_t ch : text) {
         INPUT keyDown{};
@@ -559,6 +657,23 @@ bool InputAdapter::SendUnicodeText(const std::wstring& text, int holdMs) {
     }
 
     return true;
+}
+
+bool InputAdapter::SendRelativeMouseMove(int deltaX, int deltaY) {
+    POINT cursor{};
+    if (!GetCursorPos(&cursor)) {
+        return false;
+    }
+
+    const int maxX = std::max(0, GetSystemMetrics(SM_CXSCREEN) - 1);
+    const int maxY = std::max(0, GetSystemMetrics(SM_CYSCREEN) - 1);
+    const int currentX = static_cast<int>(cursor.x);
+    const int currentY = static_cast<int>(cursor.y);
+
+    const int targetX = std::clamp(currentX + deltaX, 0, maxX);
+    const int targetY = std::clamp(currentY + deltaY, 0, maxY);
+
+    return SetCursorPos(targetX, targetY) != 0;
 }
 
 bool InputAdapter::SendLeftClick(int x, int y, int holdMs) {

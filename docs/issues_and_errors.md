@@ -35,6 +35,12 @@
 - Fix: used direct cmake/cmake-build/ctest commands as source-of-truth validation path.
 - Result: release validation remains reliable despite extension instability.
 
+### 6. Coordinated continuous move intents could not execute through runtime path
+- Symptom: UI-targeted move intents from coordinated output failed validation and adapter resolution.
+- Root cause: intent move validation was filesystem-only and InputAdapter did not handle move action.
+- Fix: expanded move validation for UI continuous params and added native InputAdapter move/fire/interact handling.
+- Result: coordinated continuous control output is now executable through existing runtime execution contracts.
+
 ## Current Known Risks (Non-Blocking)
 
 ### 1. Persistence artifacts can pollute git state if not ignored
@@ -42,8 +48,8 @@
 - Risk: local runtime state may appear as unreviewed release diffs.
 
 ### 2. Continuous vectors currently flow through generic intent params
-- Current behavior: adapters consume vector values through intent params rather than dedicated analog contract types.
-- Risk: adapter portability is good, but native control precision can be improved.
+- Current behavior: InputAdapter consumes vector values through intent params for native cursor/click control.
+- Risk: additional adapters may need dedicated high-fidelity implementations for domain-specific analog behavior.
 
 ### 3. Prediction model is deterministic and short horizon only
 - Current behavior: predictions are center-velocity extrapolations with bounded confidence heuristics.

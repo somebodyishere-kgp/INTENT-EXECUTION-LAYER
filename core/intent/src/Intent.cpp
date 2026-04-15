@@ -165,6 +165,17 @@ TargetType TargetTypeFromAction(IntentAction action) {
     }
 }
 
+TargetType ParseTargetType(std::string_view value) {
+    const std::string normalized = NormalizeAsciiLower(value);
+    if (normalized == "ui") {
+        return TargetType::UiElement;
+    }
+    if (normalized == "fs" || normalized == "filesystem") {
+        return TargetType::FileSystemPath;
+    }
+    return TargetType::Unknown;
+}
+
 }  // namespace
 
 bool Params::Has(std::string_view key) const {
@@ -270,8 +281,23 @@ bool Intent::IsValid(std::string* error) const {
         return fail("set_value intent requires parameter 'value'");
     }
 
-    if (action == IntentAction::Move && (!params.Has("path") || !params.Has("destination"))) {
-        return fail("move intent requires parameters 'path' and 'destination'");
+    if (action == IntentAction::Move) {
+        if (target.type == TargetType::FileSystemPath) {
+            if (!params.Has("path") || !params.Has("destination")) {
+                return fail("filesystem move intent requires parameters 'path' and 'destination'");
+            }
+        } else if (target.type == TargetType::UiElement) {
+            const bool hasContinuousSignal =
+                params.Has("move_x") || params.Has("move_y") ||
+                params.Has("aim_dx") || params.Has("aim_dy") ||
+                params.Has("look_dx") || params.Has("look_dy") ||
+                params.Has("fire") || params.Has("interact");
+            if (!hasContinuousSignal) {
+                return fail("ui move intent requires at least one continuous control parameter");
+            }
+        } else {
+            return fail("move intent requires UI or filesystem target type");
+        }
     }
 
     if (constraints.maxRetries < 0) {
@@ -341,7 +367,15 @@ std::optional<Intent> Intent::Deserialize(std::string_view payload) {
     intent.target.automationId = Wide(ExtractJsonString(payload, "automationId").value_or(""));
     intent.target.path = Wide(ExtractJsonString(payload, "path").value_or(""));
     intent.target.nodeId = ExtractJsonString(payload, "nodeId").value_or("");
-    intent.target.type = TargetTypeFromAction(intent.action);
+    const auto targetTypeToken = ExtractJsonString(payload, "type");
+    if (targetTypeToken.has_value()) {
+        const TargetType parsedTargetType = ParseTargetType(*targetTypeToken);
+        intent.target.type = parsedTargetType == TargetType::Unknown
+            ? TargetTypeFromAction(intent.action)
+            : parsedTargetType;
+    } else {
+        intent.target.type = TargetTypeFromAction(intent.action);
+    }
 
     const auto value = ExtractJsonString(payload, "value");
     if (value.has_value()) {
@@ -356,6 +390,46 @@ std::optional<Intent> Intent::Deserialize(std::string_view payload) {
     const auto destination = ExtractJsonString(payload, "destination");
     if (destination.has_value()) {
         intent.params.values["destination"] = Wide(*destination);
+    }
+
+    const auto moveX = ExtractJsonString(payload, "move_x");
+    if (moveX.has_value()) {
+        intent.params.values["move_x"] = Wide(*moveX);
+    }
+
+    const auto moveY = ExtractJsonString(payload, "move_y");
+    if (moveY.has_value()) {
+        intent.params.values["move_y"] = Wide(*moveY);
+    }
+
+    const auto aimDx = ExtractJsonString(payload, "aim_dx");
+    if (aimDx.has_value()) {
+        intent.params.values["aim_dx"] = Wide(*aimDx);
+    }
+
+    const auto aimDy = ExtractJsonString(payload, "aim_dy");
+    if (aimDy.has_value()) {
+        intent.params.values["aim_dy"] = Wide(*aimDy);
+    }
+
+    const auto lookDx = ExtractJsonString(payload, "look_dx");
+    if (lookDx.has_value()) {
+        intent.params.values["look_dx"] = Wide(*lookDx);
+    }
+
+    const auto lookDy = ExtractJsonString(payload, "look_dy");
+    if (lookDy.has_value()) {
+        intent.params.values["look_dy"] = Wide(*lookDy);
+    }
+
+    const auto fire = ExtractJsonString(payload, "fire");
+    if (fire.has_value()) {
+        intent.params.values["fire"] = Wide(*fire);
+    }
+
+    const auto interact = ExtractJsonString(payload, "interact");
+    if (interact.has_value()) {
+        intent.params.values["interact"] = Wide(*interact);
     }
 
     std::string validationError;

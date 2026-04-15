@@ -51,6 +51,11 @@ The runtime now supports:
 - Extended integration_universal_reflex with assertions for bundles/attention/prediction routes and coordinated demo payloads.
 - Extended integration_api_hardening with richer goal payload and new route checks.
 
+### Continuation patch: continuous move execution closure
+- Updated intent schema validation to allow UI-targeted move intents with continuous control parameters.
+- Added native continuous move/fire/interact execution handling in InputAdapter.
+- Added unit schema coverage for UI move validation and filesystem move compatibility.
+
 ## Mandatory Demo Evidence Summary
 
 Validated realtime demo flows for representative scenarios:
@@ -75,7 +80,7 @@ Observed outputs included:
 
 ## Remaining Non-Blocking Gaps
 
-1. Continuous intent mapping currently routes vector fields through generic intent params; adapter-native analog control bindings can be expanded per platform.
+1. Adapter-native analog control is currently implemented in InputAdapter; specialized app/platform adapters can extend the same continuous contract for higher-fidelity control.
 2. Prediction model is deterministic short-horizon extrapolation; deeper temporal models are intentionally deferred.
 3. Skill memory currently records coarse bundle-level action sequences; richer hierarchical skills remain future work.
 

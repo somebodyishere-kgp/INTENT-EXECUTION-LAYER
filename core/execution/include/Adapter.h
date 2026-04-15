@@ -152,7 +152,10 @@ public:
 
 private:
     static int ReadTimingParamMs(const Intent& intent, std::string_view key, int defaultValue, int maxValue);
+    static float ReadAxisParam(const Intent& intent, std::string_view key);
+    static bool ReadBoolParam(const Intent& intent, std::string_view key, bool defaultValue);
     static bool SendUnicodeText(const std::wstring& text, int holdMs);
+    static bool SendRelativeMouseMove(int deltaX, int deltaY);
     static bool SendLeftClick(int x, int y, int holdMs);
     static bool SendVirtualKey(WORD keyCode, int holdMs);
 };

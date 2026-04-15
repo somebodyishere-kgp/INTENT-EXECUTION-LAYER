@@ -71,6 +71,16 @@ Phase 15 expands UreDecisionProvider behavior:
 - Produces multi-intent outputs per decision pass when execution is enabled.
 - Publishes attention, prediction, bundles, and coordinated output to runtime status.
 
+## Adapter-Native Continuous Execution Path
+
+Phase 15 continuation work closes the execution gap between coordinated runtime output and adapter execution:
+
+- Intent validation now supports UI-targeted move intents carrying continuous control fields.
+- InputAdapter now executes continuous move vectors through native cursor motion on Windows.
+- fire/interact flags are mapped to native click signals in the same control pass.
+
+This keeps continuous control additive over existing intent contracts while making coordinated output executable in the main runtime path.
+
 ## Goal and Persistence Model
 
 Goal payload parsing now supports richer schema forms:
