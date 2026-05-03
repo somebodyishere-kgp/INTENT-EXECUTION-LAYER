@@ -232,6 +232,30 @@ int main() {
         }
 
         {
+            const std::string response = api.HandleRequestForTesting(BuildHttpRequest("GET", "/ure/skills"));
+            AssertTrue(HasStatus(response, 200), "GET /ure/skills should return 200");
+            AssertTrue(response.find("\"ranked_skills\"") != std::string::npos, "URE skills route should include ranked_skills");
+        }
+
+        {
+            const std::string response = api.HandleRequestForTesting(BuildHttpRequest("GET", "/ure/skills/active"));
+            AssertTrue(HasStatus(response, 200), "GET /ure/skills/active should return 200");
+            AssertTrue(response.find("\"active_skills\"") != std::string::npos, "URE active skills route should include active_skills");
+        }
+
+        {
+            const std::string response = api.HandleRequestForTesting(BuildHttpRequest("GET", "/ure/anticipation"));
+            AssertTrue(HasStatus(response, 200), "GET /ure/anticipation should return 200");
+            AssertTrue(response.find("\"horizon_frames\"") != std::string::npos, "URE anticipation route should include horizon_frames");
+        }
+
+        {
+            const std::string response = api.HandleRequestForTesting(BuildHttpRequest("GET", "/ure/strategy"));
+            AssertTrue(HasStatus(response, 200), "GET /ure/strategy should return 200");
+            AssertTrue(response.find("\"strategy\"") != std::string::npos, "URE strategy route should include strategy payload");
+        }
+
+        {
             const std::string response = api.HandleRequestForTesting(BuildHttpRequest("POST", "/ure/stop", "{}"));
             AssertTrue(HasStatus(response, 200), "POST /ure/stop should return 200");
             AssertTrue(response.find("\"stopped\":true") != std::string::npos, "URE stop response should include stopped=true");

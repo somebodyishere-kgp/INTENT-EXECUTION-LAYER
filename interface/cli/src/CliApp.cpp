@@ -162,8 +162,9 @@ std::uint16_t ReadPort(const ParsedCommand& command, std::uint16_t defaultValue)
     }
 
     unsigned int parsed = defaultValue;
-    const auto [ptr, error] = std::from_chars(value.data(), value.data() + value.size(), parsed);
-    if (error != std::errc() || ptr != value.data() + value.size() || parsed > std::numeric_limits<std::uint16_t>::max()) {
+    const auto [ptr, parseError] = std::from_chars(value.data(), value.data() + value.size(), parsed);
+    constexpr unsigned int kMaxPort = 65535U;
+    if (parseError != std::errc() || ptr != value.data() + value.size() || parsed > kMaxPort) {
         return defaultValue;
     }
 
@@ -1389,7 +1390,7 @@ int CliApp::HandleApi(const ParsedCommand& command) {
     std::cout << "Routes: GET /health, GET /intents, GET /capabilities, GET /control/status, "
                  "GET /capabilities/full, GET /interaction-graph, GET /interaction-node/{id}, "
                  "GET /telemetry/persistence, GET /trace/{trace_id}, GET /stream/state, GET /state/ai, GET /stream/frame, GET /stream/live, GET /perf, "
-                 "GET /ure/status, GET /ure/goal, GET /ure/bundles, GET /ure/attention, GET /ure/prediction, POST /execute, POST /act, POST /task/plan, POST /predict, POST /explain, POST /control/start, POST /control/stop, POST /ure/start, POST /ure/stop, POST /ure/goal, "
+                 "GET /ure/status, GET /ure/goal, GET /ure/bundles, GET /ure/attention, GET /ure/prediction, GET /ure/skills, GET /ure/skills/active, GET /ure/anticipation, GET /ure/strategy, POST /execute, POST /act, POST /task/plan, POST /predict, POST /explain, POST /control/start, POST /control/stop, POST /ure/start, POST /ure/stop, POST /ure/goal, "
                  "POST /stream/control\n";
     std::cout << "Graph delta query: GET /interaction-graph?delta_since=<version>\n";
     if (singleRequest) {
@@ -1694,9 +1695,9 @@ int CliApp::HandleUre(const ParsedCommand& command) {
     const bool jsonMode = WantsJson(command);
     if (command.positionals.empty()) {
         if (jsonMode) {
-            std::cout << "{\"error\":{\"code\":\"missing_ure_subcommand\",\"message\":\"Usage: iee ure live|debug|demo realtime\"}}\n";
+            std::cout << "{\"error\":{\"code\":\"missing_ure_subcommand\",\"message\":\"Usage: iee ure live|debug|skills|anticipation|strategy|demo realtime\"}}\n";
         } else {
-            std::cerr << "Usage: iee ure live|debug|demo realtime\n";
+            std::cerr << "Usage: iee ure live|debug|skills|anticipation|strategy|demo realtime\n";
         }
         return 1;
     }
@@ -1704,12 +1705,15 @@ int CliApp::HandleUre(const ParsedCommand& command) {
     const std::string subcommand = ToAsciiLower(command.positionals[0]);
     const bool demoRealtime = subcommand == "demo" && command.positionals.size() > 1U &&
         ToAsciiLower(command.positionals[1]) == "realtime";
+    const bool skillsQuery = subcommand == "skills";
+    const bool anticipationQuery = subcommand == "anticipation";
+    const bool strategyQuery = subcommand == "strategy";
 
-    if (subcommand != "live" && subcommand != "debug" && !demoRealtime) {
+    if (subcommand != "live" && subcommand != "debug" && !skillsQuery && !anticipationQuery && !strategyQuery && !demoRealtime) {
         if (jsonMode) {
-            std::cout << "{\"error\":{\"code\":\"invalid_ure_subcommand\",\"message\":\"Usage: iee ure live|debug|demo realtime\"}}\n";
+            std::cout << "{\"error\":{\"code\":\"invalid_ure_subcommand\",\"message\":\"Usage: iee ure live|debug|skills|anticipation|strategy|demo realtime\"}}\n";
         } else {
-            std::cerr << "Usage: iee ure live|debug|demo realtime\n";
+            std::cerr << "Usage: iee ure live|debug|skills|anticipation|strategy|demo realtime\n";
         }
         return 1;
     }
@@ -1719,6 +1723,54 @@ int CliApp::HandleUre(const ParsedCommand& command) {
         const std::string response = api.HandleRequestForTesting(BuildHttpRequest(method, path, payload));
         return std::make_pair(ParseHttpStatus(response), ExtractHttpBody(response));
     };
+
+    if (skillsQuery) {
+        const bool activeOnly = HasOption(command, "active");
+        const std::size_t limit = ReadSizeOption(command, "limit", 8U, 64U);
+        const std::string path = activeOnly
+            ? "/ure/skills/active"
+            : "/ure/skills?limit=" + std::to_string(limit);
+
+        const auto [statusCode, body] = request("GET", path, "");
+        if (jsonMode) {
+            std::cout << "{";
+            std::cout << "\"status_code\":" << statusCode << ",";
+            std::cout << "\"payload\":" << (body.empty() ? "{}" : body);
+            std::cout << "}\n";
+        } else {
+            std::cout << "URE skills (" << statusCode << ")\n";
+            std::cout << body << "\n";
+        }
+        return (statusCode >= 200 && statusCode < 300) ? 0 : 1;
+    }
+
+    if (anticipationQuery) {
+        const auto [statusCode, body] = request("GET", "/ure/anticipation", "");
+        if (jsonMode) {
+            std::cout << "{";
+            std::cout << "\"status_code\":" << statusCode << ",";
+            std::cout << "\"anticipation\":" << (body.empty() ? "{}" : body);
+            std::cout << "}\n";
+        } else {
+            std::cout << "URE anticipation (" << statusCode << ")\n";
+            std::cout << body << "\n";
+        }
+        return (statusCode >= 200 && statusCode < 300) ? 0 : 1;
+    }
+
+    if (strategyQuery) {
+        const auto [statusCode, body] = request("GET", "/ure/strategy", "");
+        if (jsonMode) {
+            std::cout << "{";
+            std::cout << "\"status_code\":" << statusCode << ",";
+            std::cout << "\"strategy\":" << (body.empty() ? "{}" : body);
+            std::cout << "}\n";
+        } else {
+            std::cout << "URE strategy (" << statusCode << ")\n";
+            std::cout << body << "\n";
+        }
+        return (statusCode >= 200 && statusCode < 300) ? 0 : 1;
+    }
 
     if (subcommand == "debug") {
         const bool includeBundles = HasOption(command, "bundles");

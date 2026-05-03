@@ -87,3 +87,43 @@ Observed outputs included:
 ## Release Note Summary
 
 v3.2.1 adds fluid coordinated reflex intelligence to IEE with multi-intent bundles, continuous control smoothing, specialist-agent coordination, richer runtime diagnostics, and disk-backed runtime memory while preserving deterministic safety-gated execution contracts.
+
+## v4.0 Phase 16 Status
+
+Date: 2026-04-15
+
+Completed in this iteration:
+
+- Added hierarchical skill data model (SkillNode, SkillCondition, SkillOutcome).
+- Extended SkillMemoryStore with:
+  - thread-safe access guards
+  - enriched skill persistence fields (category, dependencies, complexity, estimated_frames)
+  - deterministic goal-aware ranking
+  - hierarchy synthesis helper
+- Added deterministic anticipation engine surfaces via BuildAnticipationSignal.
+- Added deterministic temporal strategy synthesis via BuildTemporalStrategy.
+- Added bounded preemption logic via EvaluatePreemption.
+- Integrated all Phase 16 outputs into UreDecisionProvider runtime loop.
+- Extended runtime status with v4.0 counters and state snapshots.
+- Added new API endpoints:
+  - GET /ure/skills
+  - GET /ure/skills/active
+  - GET /ure/anticipation
+  - GET /ure/strategy
+- Extended CLI support:
+  - iee ure skills
+  - iee ure anticipation
+  - iee ure strategy
+- Extended integration test coverage for all new routes in:
+  - integration_universal_reflex
+  - integration_api_hardening
+
+Verification in this iteration:
+
+- Build: cmake --build build --config Release -> success
+- Test: ctest --test-dir build -C Release --output-on-failure -> 20/20 passed
+
+Current maturity:
+
+- v4.0 Phase 16 core runtime scaffolding is integrated and production-safe under existing deterministic contracts.
+- Adapter-specific advanced analog execution and deeper strategy learning remain additive future expansions, not blockers.

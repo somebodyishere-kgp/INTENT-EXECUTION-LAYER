@@ -1776,14 +1776,19 @@ public:
     };
 
     using RuntimeSnapshotFn = std::function<RuntimeSnapshot()>;
-        using StepObserverFn = std::function<void(
-                const ReflexStepResult&,
-                const AttentionMap&,
-                const std::vector<PredictedState>&,
-                const std::vector<ReflexBundle>&,
-                const CoordinatedOutput&,
-                bool intentProduced,
-                bool goalConditioned)>;
+    using StepObserverFn = std::function<void(
+        const ReflexStepResult&,
+        const AttentionMap&,
+        const std::vector<PredictedState>&,
+        const std::vector<ReflexBundle>&,
+        const CoordinatedOutput&,
+        const std::vector<Skill>&,
+        const std::vector<SkillNode>&,
+        const AnticipationSignal&,
+        const TemporalStrategyPlan&,
+        const PreemptionDecision&,
+        bool intentProduced,
+        bool goalConditioned)>;
 
     UreDecisionProvider(
         UniversalReflexAgent* reflexAgent,
@@ -1847,7 +1852,44 @@ public:
             strategyAgent_);
         bundles.push_back(BuildBundleFromReflexDecision(step.decision));
 
-        const std::vector<ReflexBundle> plannedBundles = microPlanner_.refine(step.worldModel, runtime.goal, bundles);
+        std::vector<ReflexBundle> plannedBundles = microPlanner_.refine(step.worldModel, runtime.goal, bundles);
+
+        std::vector<Skill> rankedSkills;
+        std::vector<SkillNode> skillHierarchy;
+        if (skillMemoryStore_ != nullptr) {
+            rankedSkills = skillMemoryStore_->RankSkillsForGoal(runtime.goal.active ? &runtime.goal : nullptr, 8U);
+            skillHierarchy = skillMemoryStore_->BuildHierarchy(16U);
+        }
+
+        const AnticipationSignal anticipation = BuildAnticipationSignal(step.worldModel, attention, predictions, 3U);
+        const TemporalStrategyPlan strategy = BuildTemporalStrategy(
+            runtime.goal.active ? &runtime.goal : nullptr,
+            rankedSkills,
+            attention,
+            anticipation);
+        const PreemptionDecision preemption = EvaluatePreemption(
+            strategy,
+            anticipation,
+            step.decision,
+            plannedBundles);
+
+        if (preemption.should_preempt && !preemption.suggested_source.empty()) {
+            for (ReflexBundle& bundle : plannedBundles) {
+                if (bundle.source == preemption.suggested_source) {
+                    bundle.priority = std::clamp(bundle.priority + 0.18F, 0.0F, 1.0F);
+                }
+            }
+            std::sort(plannedBundles.begin(), plannedBundles.end(), [](const ReflexBundle& left, const ReflexBundle& right) {
+                if (std::abs(left.priority - right.priority) > 0.0001F) {
+                    return left.priority > right.priority;
+                }
+                if (left.source != right.source) {
+                    return left.source < right.source;
+                }
+                return left.target_object_id < right.target_object_id;
+            });
+        }
+
         CoordinatedOutput coordinated = coordinator_.resolve(plannedBundles);
         coordinated.continuous = continuousController_.Apply(coordinated.continuous);
 
@@ -1942,6 +1984,11 @@ public:
                 predictions,
                 plannedBundles,
                 coordinated,
+                rankedSkills,
+                skillHierarchy,
+                anticipation,
+                strategy,
+                preemption,
                 intentProduced,
                 goalConditioned);
         }
@@ -2466,6 +2513,10 @@ std::string IntentApiServer::SerializeUreStatusJson() const {
     json << "\"execution_failures\":" << runtime.executionFailures << ",";
     json << "\"bundle_frames\":" << runtime.bundleFrames << ",";
     json << "\"coordinated_actions\":" << runtime.coordinatedActions << ",";
+    json << "\"skill_hierarchy_frames\":" << runtime.skillHierarchyFrames << ",";
+    json << "\"anticipation_frames\":" << runtime.anticipationFrames << ",";
+    json << "\"strategy_frames\":" << runtime.strategyFrames << ",";
+    json << "\"preempted_frames\":" << runtime.preemptedFrames << ",";
     json << "\"goal_version\":" << runtime.goalVersion << ",";
     json << "\"last_reason\":\"" << EscapeJson(runtime.lastReason) << "\",";
     json << "\"last_trace_id\":\"" << EscapeJson(runtime.lastTraceId) << "\",";
@@ -2483,6 +2534,11 @@ std::string IntentApiServer::SerializeUreStatusJson() const {
     json << "\"prediction\":" << SerializePredictedStatesJson(runtime.predictions) << ",";
     json << "\"bundles\":" << SerializeReflexBundlesJson(runtime.bundles) << ",";
     json << "\"coordinated_output\":" << SerializeCoordinatedOutputJson(runtime.coordinatedOutput) << ",";
+    json << "\"ranked_skills\":" << SerializeSkillsJson(runtime.rankedSkills) << ",";
+    json << "\"skill_hierarchy\":" << SerializeSkillNodesJson(runtime.skillHierarchy) << ",";
+    json << "\"anticipation\":" << SerializeAnticipationSignalJson(runtime.anticipation) << ",";
+    json << "\"strategy\":" << SerializeTemporalStrategyJson(runtime.strategy) << ",";
+    json << "\"preemption\":" << SerializePreemptionDecisionJson(runtime.preemption) << ",";
     json << "\"skills\":" << SerializeSkillsJson(skills) << ",";
     json << "\"metrics\":" << SerializeReflexMetricsJson(metrics) << ",";
     json << "\"telemetry\":" << telemetry_.SerializeReflexJson(256);
@@ -3614,6 +3670,10 @@ std::string IntentApiServer::HandleRequest(const std::string& request) {
                 ureRuntime_.executionFailures = 0;
                 ureRuntime_.bundleFrames = 0;
                 ureRuntime_.coordinatedActions = 0;
+                ureRuntime_.skillHierarchyFrames = 0;
+                ureRuntime_.anticipationFrames = 0;
+                ureRuntime_.strategyFrames = 0;
+                ureRuntime_.preemptedFrames = 0;
                 ureRuntime_.lastTraceId.clear();
                 ureRuntime_.lastReason.clear();
                 ureRuntime_.lastDecisionTimeUs = 0;
@@ -3624,6 +3684,11 @@ std::string IntentApiServer::HandleRequest(const std::string& request) {
                 ureRuntime_.predictions.clear();
                 ureRuntime_.bundles.clear();
                 ureRuntime_.coordinatedOutput = CoordinatedOutput{};
+                ureRuntime_.rankedSkills.clear();
+                ureRuntime_.skillHierarchy.clear();
+                ureRuntime_.anticipation = AnticipationSignal{};
+                ureRuntime_.strategy = TemporalStrategyPlan{};
+                ureRuntime_.preemption = PreemptionDecision{};
             }
 
             ureRuntime_.active = true;
@@ -3656,11 +3721,28 @@ std::string IntentApiServer::HandleRequest(const std::string& request) {
                 const std::vector<PredictedState>& predictions,
                 const std::vector<ReflexBundle>& bundles,
                 const CoordinatedOutput& coordinated,
+                const std::vector<Skill>& rankedSkills,
+                const std::vector<SkillNode>& skillHierarchy,
+                const AnticipationSignal& anticipation,
+                const TemporalStrategyPlan& strategy,
+                const PreemptionDecision& preemption,
                 bool intentProduced,
                 bool goalConditioned) {
                 std::lock_guard<std::mutex> lock(ureRuntimeMutex_);
                 ++ureRuntime_.framesEvaluated;
                 ++ureRuntime_.bundleFrames;
+                if (!skillHierarchy.empty()) {
+                    ++ureRuntime_.skillHierarchyFrames;
+                }
+                if (!anticipation.events.empty()) {
+                    ++ureRuntime_.anticipationFrames;
+                }
+                if (strategy.active) {
+                    ++ureRuntime_.strategyFrames;
+                }
+                if (preemption.should_preempt) {
+                    ++ureRuntime_.preemptedFrames;
+                }
                 if (intentProduced) {
                     ++ureRuntime_.intentsProduced;
                 }
@@ -3674,6 +3756,11 @@ std::string IntentApiServer::HandleRequest(const std::string& request) {
                 ureRuntime_.predictions = predictions;
                 ureRuntime_.bundles = bundles;
                 ureRuntime_.coordinatedOutput = coordinated;
+                ureRuntime_.rankedSkills = rankedSkills;
+                ureRuntime_.skillHierarchy = skillHierarchy;
+                ureRuntime_.anticipation = anticipation;
+                ureRuntime_.strategy = strategy;
+                ureRuntime_.preemption = preemption;
             });
 
         runtime.SetDecisionProvider(provider, static_cast<int>(std::clamp<std::int64_t>(decisionBudgetUs / 1000, 1, 50)));
@@ -3798,6 +3885,100 @@ std::string IntentApiServer::HandleRequest(const std::string& request) {
             predictions = ureRuntime_.predictions;
         }
         return BuildResponse(200, "OK", SerializePredictedStatesJson(predictions));
+    }
+
+    if (method == "GET" && path == "/ure/skills/active") {
+        TemporalStrategyPlan strategy;
+        PreemptionDecision preemption;
+        {
+            std::lock_guard<std::mutex> lock(ureRuntimeMutex_);
+            strategy = ureRuntime_.strategy;
+            preemption = ureRuntime_.preemption;
+        }
+
+        std::vector<std::string> activeSkills;
+        activeSkills.reserve(strategy.milestones.size());
+        for (const StrategyMilestone& milestone : strategy.milestones) {
+            if (!milestone.skill_name.empty()) {
+                activeSkills.push_back(milestone.skill_name);
+            }
+        }
+        std::sort(activeSkills.begin(), activeSkills.end());
+        activeSkills.erase(std::unique(activeSkills.begin(), activeSkills.end()), activeSkills.end());
+
+        std::ostringstream json;
+        json << "{";
+        json << "\"active\":" << (strategy.active ? "true" : "false") << ",";
+        json << "\"strategy_id\":\"" << EscapeJson(strategy.strategy_id) << "\",";
+        json << "\"active_skills\":[";
+        for (std::size_t index = 0; index < activeSkills.size(); ++index) {
+            if (index > 0) {
+                json << ",";
+            }
+            json << "\"" << EscapeJson(activeSkills[index]) << "\"";
+        }
+        json << "],";
+        json << "\"preemption\":" << SerializePreemptionDecisionJson(preemption);
+        json << "}";
+        return BuildResponse(200, "OK", json.str());
+    }
+
+    if (method == "GET" && path == "/ure/skills") {
+        const std::size_t limit = ReadQuerySize(query, "limit", 8U, 1U, 64U);
+
+        std::vector<Skill> rankedSkills;
+        std::vector<SkillNode> hierarchy;
+        ReflexGoal goal;
+        {
+            std::lock_guard<std::mutex> lock(ureRuntimeMutex_);
+            rankedSkills = ureRuntime_.rankedSkills;
+            hierarchy = ureRuntime_.skillHierarchy;
+            goal = ureRuntime_.goal;
+        }
+
+        if (rankedSkills.empty()) {
+            rankedSkills = skillMemoryStore_.RankSkillsForGoal(goal.active ? &goal : nullptr, limit);
+        }
+        if (hierarchy.empty()) {
+            hierarchy = skillMemoryStore_.BuildHierarchy(16U);
+        }
+
+        if (rankedSkills.size() > limit) {
+            rankedSkills.resize(limit);
+        }
+
+        std::ostringstream json;
+        json << "{";
+        json << "\"ranked_skills\":" << SerializeSkillsJson(rankedSkills) << ",";
+        json << "\"skill_hierarchy\":" << SerializeSkillNodesJson(hierarchy);
+        json << "}";
+        return BuildResponse(200, "OK", json.str());
+    }
+
+    if (method == "GET" && path == "/ure/anticipation") {
+        AnticipationSignal anticipation;
+        {
+            std::lock_guard<std::mutex> lock(ureRuntimeMutex_);
+            anticipation = ureRuntime_.anticipation;
+        }
+        return BuildResponse(200, "OK", SerializeAnticipationSignalJson(anticipation));
+    }
+
+    if (method == "GET" && path == "/ure/strategy") {
+        TemporalStrategyPlan strategy;
+        PreemptionDecision preemption;
+        {
+            std::lock_guard<std::mutex> lock(ureRuntimeMutex_);
+            strategy = ureRuntime_.strategy;
+            preemption = ureRuntime_.preemption;
+        }
+
+        std::ostringstream json;
+        json << "{";
+        json << "\"strategy\":" << SerializeTemporalStrategyJson(strategy) << ",";
+        json << "\"preemption\":" << SerializePreemptionDecisionJson(preemption);
+        json << "}";
+        return BuildResponse(200, "OK", json.str());
     }
 
     if ((method == "POST" && path == "/ure/goal") || (method == "GET" && path == "/ure/goal")) {

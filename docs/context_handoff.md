@@ -81,3 +81,71 @@ Operational limitation:
 - Implementation pass delivered coordination module and runtime wiring.
 - Debug pass validated route contracts and runtime counters under demo load.
 - Documentation pass synchronized required release docs and handoff state.
+
+---
+
+# v4.0 Phase 16 Continuation Update
+
+## 1. What Are We Building
+We are building a deterministic universal execution layer where reflex coordination can evolve into skill-aware, anticipation-aware, and strategy-aware control without breaking existing contracts.
+
+## 2. Current State
+Completed in this iteration:
+
+- Added hierarchical skill primitives (SkillNode, SkillCondition, SkillOutcome).
+- Extended SkillMemoryStore with deterministic ranking, hierarchy generation, and thread-safe persistence.
+- Added anticipation signal generation with bounded event sets.
+- Added temporal strategy plan synthesis from goal + ranked skills.
+- Added preemption decision surface and deterministic bundle-priority override path.
+- Integrated all new outputs into UreDecisionProvider loop and runtime snapshots.
+- Exposed new endpoints: /ure/skills, /ure/skills/active, /ure/anticipation, /ure/strategy.
+- Added new CLI commands: iee ure skills, iee ure anticipation, iee ure strategy.
+- Updated integration tests for the new endpoints.
+
+Validation:
+
+- Build succeeded (Release).
+- Full test suite passed (20/20).
+
+## 3. Last Work Done
+Files updated:
+
+- core/reflex/include/ReflexCoordination.h
+- core/reflex/src/ReflexCoordination.cpp
+- interface/api/include/IntentApiServer.h
+- interface/api/src/IntentApiServer.cpp
+- interface/cli/src/CliParser.cpp
+- interface/cli/src/CliApp.cpp
+- tests/integration_universal_reflex.cpp
+- tests/integration_api_hardening.cpp
+- docs/architecture.md
+- docs/status.md
+- docs/parity.md
+- docs/issues_and_errors.md
+- docs/context_handoff.md
+
+## 4. Current Problem
+No code-level blocker.
+
+Environment note:
+
+- VS Code CMake build integration can intermittently fail to configure; command-line cmake build/test currently provides reliable validation.
+
+## 5. Next Plan
+1. Add policy tunables for preemption thresholds and strategy horizon.
+2. Introduce richer hierarchy learning from successful multi-step outcomes.
+3. Expand adapter-native continuous execution contracts beyond InputAdapter.
+4. Add targeted stress tests for long-run strategy/anticipation stability.
+
+## 6. Key Decisions Taken
+- Keep v4.0 additive over v3.2.1 and preserve all existing endpoints/contracts.
+- Keep all new planning and ranking deterministic and bounded.
+- Keep fallback behavior explicit so missing v4.0 signals never break runtime progression.
+- Keep status and debug surfaces first-class to make rollout observable.
+
+## 7. Multi-Agent Contribution
+- Architecture agent produced v4.0 layering and bounded-budget design.
+- Implementation agent mapped concrete file-level insertion points and compatibility strategy.
+- Debug/perf agent set practical latency and fallback constraints.
+- Refactor agent shaped minimal-intrusion integration to avoid god-object growth.
+- Documentation agent provided required update blueprint for mandatory docs and new v4.0 docs.

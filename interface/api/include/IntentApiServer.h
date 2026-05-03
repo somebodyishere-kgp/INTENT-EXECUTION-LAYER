@@ -50,6 +50,10 @@ private:
         bool lastGoalConditioned{false};
         std::uint64_t bundleFrames{0};
         std::uint64_t coordinatedActions{0};
+        std::uint64_t skillHierarchyFrames{0};
+        std::uint64_t anticipationFrames{0};
+        std::uint64_t strategyFrames{0};
+        std::uint64_t preemptedFrames{0};
         std::chrono::system_clock::time_point startedAt{std::chrono::system_clock::now()};
         std::chrono::system_clock::time_point lastTickAt{std::chrono::system_clock::time_point{}};
         ReflexGoal goal;
@@ -57,6 +61,11 @@ private:
         std::vector<PredictedState> predictions;
         std::vector<ReflexBundle> bundles;
         CoordinatedOutput coordinatedOutput;
+        std::vector<Skill> rankedSkills;
+        std::vector<SkillNode> skillHierarchy;
+        AnticipationSignal anticipation;
+        TemporalStrategyPlan strategy;
+        PreemptionDecision preemption;
     };
 
     std::string HandleRequest(const std::string& request);

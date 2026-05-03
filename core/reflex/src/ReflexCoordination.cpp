@@ -239,6 +239,52 @@ std::vector<std::string> Split(const std::string& value, char delimiter) {
     return pieces;
 }
 
+std::string Join(const std::vector<std::string>& values, char delimiter) {
+    std::ostringstream joined;
+    for (std::size_t index = 0; index < values.size(); ++index) {
+        if (index > 0) {
+            joined << delimiter;
+        }
+        joined << values[index];
+    }
+    return joined.str();
+}
+
+float SkillSuccessRate(const Skill& skill) {
+    if (skill.attempts == 0U) {
+        return 0.0F;
+    }
+    return static_cast<float>(skill.success_count) / static_cast<float>(skill.attempts);
+}
+
+bool TokenOverlaps(const std::vector<std::string>& lhs, const std::vector<std::string>& rhs) {
+    for (const std::string& token : lhs) {
+        if (std::binary_search(rhs.begin(), rhs.end(), token)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+std::string BuildStrategyId(const ReflexGoal* goal) {
+    if (goal == nullptr || goal->goal.empty()) {
+        return "strategy_inactive";
+    }
+
+    std::string normalized = ToAsciiLower(goal->goal);
+    for (char& ch : normalized) {
+        if (!((ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9'))) {
+            ch = '_';
+        }
+    }
+
+    if (normalized.size() > 40U) {
+        normalized.resize(40U);
+    }
+
+    return "strategy_" + normalized;
+}
+
 }  // namespace
 
 ContinuousController::ContinuousController(float smoothingAlpha, float sensitivity)
@@ -556,6 +602,7 @@ SkillMemoryStore::SkillMemoryStore(std::filesystem::path filePath)
 }
 
 bool SkillMemoryStore::Load() {
+    std::lock_guard<std::mutex> lock(skillsMutex_);
     skills_.clear();
 
     std::error_code error;
@@ -622,6 +669,53 @@ bool SkillMemoryStore::Load() {
             skill.sequence.push_back(std::move(action));
         }
 
+        if (fields.size() > 5U && !fields[5].empty()) {
+            skill.category = fields[5];
+        }
+
+        if (fields.size() > 6U && !fields[6].empty()) {
+            std::int64_t complexity = 0;
+            if (parseI64(fields[6], &complexity)) {
+                skill.complexity_level = static_cast<int>(std::clamp<std::int64_t>(complexity, 0, 8));
+            }
+        }
+
+        if (fields.size() > 7U && !fields[7].empty()) {
+            std::int64_t estimatedFrames = 0;
+            if (parseI64(fields[7], &estimatedFrames)) {
+                skill.estimated_frames = static_cast<int>(std::clamp<std::int64_t>(estimatedFrames, 1, 2000));
+            }
+        }
+
+        if (fields.size() > 8U && !fields[8].empty()) {
+            const std::vector<std::string> dependencies = Split(fields[8], ',');
+            for (const std::string& dependency : dependencies) {
+                if (!dependency.empty()) {
+                    skill.dependencies.push_back(dependency);
+                }
+            }
+            std::sort(skill.dependencies.begin(), skill.dependencies.end());
+            skill.dependencies.erase(
+                std::unique(skill.dependencies.begin(), skill.dependencies.end()),
+                skill.dependencies.end());
+        }
+
+        if (skill.category.empty()) {
+            skill.category = "primitive";
+        }
+
+        if (skill.estimated_frames <= 0) {
+            skill.estimated_frames = static_cast<int>((std::max)(std::size_t{1U}, skill.sequence.size()) * 4U);
+        }
+
+        if (skill.complexity_level <= 0) {
+            if (skill.sequence.size() >= 6U) {
+                skill.complexity_level = 2;
+            } else if (skill.sequence.size() >= 3U) {
+                skill.complexity_level = 1;
+            }
+        }
+
         skills_[skill.name] = std::move(skill);
     }
 
@@ -629,6 +723,7 @@ bool SkillMemoryStore::Load() {
 }
 
 bool SkillMemoryStore::Save() const {
+    std::lock_guard<std::mutex> lock(skillsMutex_);
     std::error_code directoryError;
     std::filesystem::create_directories(filePath_.parent_path(), directoryError);
 
@@ -652,6 +747,18 @@ bool SkillMemoryStore::Save() const {
                    << ':'
                    << SanitizeField(skill.sequence[index].intentAction);
         }
+
+        stream << '\t' << SanitizeField(skill.category)
+               << '\t' << skill.complexity_level
+               << '\t' << skill.estimated_frames
+               << '\t';
+
+        for (std::size_t index = 0; index < skill.dependencies.size(); ++index) {
+            if (index > 0) {
+                stream << ',';
+            }
+            stream << SanitizeField(skill.dependencies[index]);
+        }
         stream << '\n';
     }
 
@@ -663,6 +770,8 @@ void SkillMemoryStore::Record(const std::string& name, const std::vector<Action>
         return;
     }
 
+    std::lock_guard<std::mutex> lock(skillsMutex_);
+
     Skill& skill = skills_[name];
     skill.name = name;
     skill.attempts += 1U;
@@ -672,10 +781,24 @@ void SkillMemoryStore::Record(const std::string& name, const std::vector<Action>
     if (!sequence.empty()) {
         skill.sequence = sequence;
     }
+    if (skill.category.empty()) {
+        skill.category = "primitive";
+    }
+    if (skill.estimated_frames <= 0 || !sequence.empty()) {
+        skill.estimated_frames = static_cast<int>((std::max)(std::size_t{1U}, skill.sequence.size()) * 4U);
+    }
+    if (sequence.size() >= 6U) {
+        skill.complexity_level = 2;
+    } else if (sequence.size() >= 3U) {
+        skill.complexity_level = 1;
+    } else {
+        skill.complexity_level = 0;
+    }
     skill.updated_at_ms = EpochMs(std::chrono::system_clock::now());
 }
 
 std::vector<Skill> SkillMemoryStore::Skills(std::size_t limit) const {
+    std::lock_guard<std::mutex> lock(skillsMutex_);
     const std::size_t boundedLimit = (std::max)(static_cast<std::size_t>(1U), limit);
 
     std::vector<Skill> ordered;
@@ -685,8 +808,10 @@ std::vector<Skill> SkillMemoryStore::Skills(std::size_t limit) const {
     }
 
     std::sort(ordered.begin(), ordered.end(), [](const Skill& left, const Skill& right) {
-        if (left.success_count != right.success_count) {
-            return left.success_count > right.success_count;
+        const float leftRate = SkillSuccessRate(left);
+        const float rightRate = SkillSuccessRate(right);
+        if (std::abs(leftRate - rightRate) > 0.0001F) {
+            return leftRate > rightRate;
         }
         if (left.attempts != right.attempts) {
             return left.attempts > right.attempts;
@@ -699,6 +824,134 @@ std::vector<Skill> SkillMemoryStore::Skills(std::size_t limit) const {
     }
 
     return ordered;
+}
+
+std::vector<Skill> SkillMemoryStore::RankSkillsForGoal(const ReflexGoal* goal, std::size_t limit) const {
+    const std::size_t boundedLimit = (std::max)(std::size_t{1U}, limit);
+    std::vector<Skill> candidates = Skills((std::max)(boundedLimit, std::size_t{32U}));
+    const std::vector<std::string> goalTokens = goal == nullptr
+        ? std::vector<std::string>{}
+        : TokenizeLower(goal->goal + " " + goal->target + " " + goal->domain);
+
+    std::vector<std::pair<float, Skill>> scored;
+    scored.reserve(candidates.size());
+
+    for (Skill& skill : candidates) {
+        float score = SkillSuccessRate(skill);
+        score += std::min(0.18F, static_cast<float>(skill.attempts) * 0.015F);
+        score -= static_cast<float>(skill.complexity_level) * 0.03F;
+
+        if (skill.estimated_frames > 0) {
+            score += std::clamp(8.0F / static_cast<float>(skill.estimated_frames), 0.0F, 0.12F);
+        }
+
+        if (!goalTokens.empty()) {
+            std::string sequenceText;
+            for (const Action& action : skill.sequence) {
+                sequenceText += action.name;
+                sequenceText.push_back(' ');
+                sequenceText += action.intentAction;
+                sequenceText.push_back(' ');
+            }
+
+            const std::vector<std::string> skillTokens = TokenizeLower(
+                skill.name + " " + skill.category + " " + sequenceText + " " + Join(skill.dependencies, ' '));
+            if (TokenOverlaps(goalTokens, skillTokens)) {
+                score += 0.30F;
+            }
+        }
+
+        scored.push_back({score, skill});
+    }
+
+    std::sort(scored.begin(), scored.end(), [](const auto& left, const auto& right) {
+        if (std::abs(left.first - right.first) > 0.0001F) {
+            return left.first > right.first;
+        }
+        return left.second.name < right.second.name;
+    });
+
+    std::vector<Skill> ranked;
+    ranked.reserve((std::min)(boundedLimit, scored.size()));
+    for (std::size_t index = 0; index < scored.size() && ranked.size() < boundedLimit; ++index) {
+        ranked.push_back(std::move(scored[index].second));
+    }
+
+    return ranked;
+}
+
+std::vector<SkillNode> SkillMemoryStore::BuildHierarchy(std::size_t limit) const {
+    const std::size_t boundedLimit = (std::max)(std::size_t{1U}, limit);
+    const std::vector<Skill> ranked = RankSkillsForGoal(nullptr, (std::max)(std::size_t{8U}, boundedLimit));
+
+    std::vector<SkillNode> primitiveNodes;
+    primitiveNodes.reserve(ranked.size());
+
+    for (const Skill& skill : ranked) {
+        SkillNode node;
+        node.id = "skill_" + ToAsciiLower(skill.name);
+        std::replace_if(node.id.begin(), node.id.end(), [](char ch) {
+            return !((ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9') || ch == '_');
+        }, '_');
+        node.name = skill.name;
+        node.category = skill.category.empty() ? "primitive" : skill.category;
+        node.children = skill.dependencies;
+        std::sort(node.children.begin(), node.children.end());
+        node.children.erase(std::unique(node.children.begin(), node.children.end()), node.children.end());
+
+        if (node.children.empty()) {
+            for (const Action& action : skill.sequence) {
+                if (action.name.empty()) {
+                    continue;
+                }
+                SkillCondition condition;
+                condition.field = "action";
+                condition.expected = action.name;
+                node.conditions.push_back(std::move(condition));
+                if (node.conditions.size() >= 3U) {
+                    break;
+                }
+            }
+        }
+
+        node.last_outcome.success = skill.success_count > 0U;
+        node.last_outcome.confidence = SkillSuccessRate(skill);
+        node.last_outcome.note = "attempts=" + std::to_string(skill.attempts);
+        primitiveNodes.push_back(std::move(node));
+    }
+
+    std::sort(primitiveNodes.begin(), primitiveNodes.end(), [](const SkillNode& left, const SkillNode& right) {
+        return left.id < right.id;
+    });
+
+    std::vector<SkillNode> hierarchy;
+    hierarchy.reserve((std::min)(boundedLimit, primitiveNodes.size() + std::size_t{1U}));
+
+    if (primitiveNodes.size() >= 2U && boundedLimit > 1U) {
+        SkillNode strategy;
+        strategy.id = "strategy_root";
+        strategy.name = "goal_strategy";
+        strategy.category = "strategy";
+        const std::size_t childLimit = (std::min)(primitiveNodes.size(), std::size_t{3U});
+        float confidenceAccumulator = 0.0F;
+        for (std::size_t index = 0; index < childLimit; ++index) {
+            strategy.children.push_back(primitiveNodes[index].id);
+            confidenceAccumulator += primitiveNodes[index].last_outcome.confidence;
+        }
+        strategy.last_outcome.success = confidenceAccumulator > 0.0F;
+        strategy.last_outcome.confidence = confidenceAccumulator / static_cast<float>(childLimit);
+        strategy.last_outcome.note = "auto_composed";
+        hierarchy.push_back(std::move(strategy));
+    }
+
+    for (SkillNode& node : primitiveNodes) {
+        if (hierarchy.size() >= boundedLimit) {
+            break;
+        }
+        hierarchy.push_back(std::move(node));
+    }
+
+    return hierarchy;
 }
 
 AttentionMap BuildAttentionMap(const WorldModel& model, std::size_t maxObjects) {
@@ -785,6 +1038,162 @@ std::vector<PredictedState> BuildPredictedStates(
     }
 
     return predictions;
+}
+
+AnticipationSignal BuildAnticipationSignal(
+    const WorldModel& model,
+    const AttentionMap& attention,
+    const std::vector<PredictedState>& predictions,
+    std::uint64_t horizonFrames) {
+    AnticipationSignal signal;
+    signal.horizon_frames = (std::max)(std::uint64_t{1U}, horizonFrames);
+
+    const std::size_t predictionLimit = (std::min)(predictions.size(), std::size_t{8U});
+    signal.events.reserve(predictionLimit);
+    for (std::size_t index = 0; index < predictionLimit; ++index) {
+        AnticipationEvent event;
+        event.object_id = predictions[index].object_id;
+        event.future_position = predictions[index].future_position;
+        event.confidence = predictions[index].confidence;
+        signal.events.push_back(std::move(event));
+    }
+
+    for (const WorldObject& object : attention.focus_objects) {
+        if (!object.type.empty()) {
+            signal.anticipated_affordances.push_back(object.type);
+        } else if (!object.id.empty()) {
+            signal.anticipated_affordances.push_back(object.id);
+        }
+    }
+
+    if (signal.anticipated_affordances.empty()) {
+        std::vector<std::string> ids;
+        ids.reserve(model.objects.size());
+        for (const auto& entry : model.objects) {
+            ids.push_back(entry.first);
+        }
+        std::sort(ids.begin(), ids.end());
+        const std::size_t idLimit = (std::min)(ids.size(), std::size_t{4U});
+        for (std::size_t index = 0; index < idLimit; ++index) {
+            signal.anticipated_affordances.push_back(ids[index]);
+        }
+    }
+
+    std::sort(signal.anticipated_affordances.begin(), signal.anticipated_affordances.end());
+    signal.anticipated_affordances.erase(
+        std::unique(signal.anticipated_affordances.begin(), signal.anticipated_affordances.end()),
+        signal.anticipated_affordances.end());
+
+    float topConfidence = 0.0F;
+    if (!signal.events.empty()) {
+        topConfidence = signal.events.front().confidence;
+    }
+
+    const float attentionWeight = attention.focus_objects.empty() ? 0.55F : 0.75F;
+    signal.drift_confidence = std::clamp(topConfidence * attentionWeight, 0.0F, 1.0F);
+    signal.actionable = signal.drift_confidence >= 0.62F && !signal.events.empty();
+    signal.reason = signal.actionable ? "high_confidence_future_state" : "monitor_only";
+
+    return signal;
+}
+
+TemporalStrategyPlan BuildTemporalStrategy(
+    const ReflexGoal* goal,
+    const std::vector<Skill>& rankedSkills,
+    const AttentionMap& attention,
+    const AnticipationSignal& anticipation) {
+    TemporalStrategyPlan strategy;
+    strategy.strategy_id = BuildStrategyId(goal);
+    strategy.goal = goal == nullptr ? "" : goal->goal;
+
+    if (goal == nullptr || !goal->active || goal->goal.empty()) {
+        return strategy;
+    }
+
+    strategy.active = true;
+
+    const std::string targetObjectId = !attention.focus_objects.empty()
+        ? attention.focus_objects.front().id
+        : (anticipation.events.empty() ? std::string{} : anticipation.events.front().object_id);
+
+    float confidenceAccumulator = 0.0F;
+    const std::size_t milestoneLimit = (std::min)(rankedSkills.size(), std::size_t{3U});
+    for (std::size_t index = 0; index < milestoneLimit; ++index) {
+        StrategyMilestone milestone;
+        milestone.skill_name = rankedSkills[index].name;
+        milestone.target_object_id = targetObjectId;
+        milestone.completed = false;
+        strategy.milestones.push_back(std::move(milestone));
+        confidenceAccumulator += SkillSuccessRate(rankedSkills[index]);
+    }
+
+    if (strategy.milestones.empty()) {
+        StrategyMilestone fallbackMilestone;
+        fallbackMilestone.skill_name = goal->preferredActions.empty()
+            ? "goal_progress"
+            : goal->preferredActions.front();
+        fallbackMilestone.target_object_id = goal->target;
+        strategy.milestones.push_back(std::move(fallbackMilestone));
+        confidenceAccumulator = 0.45F;
+    }
+
+    strategy.confidence = std::clamp(
+        (confidenceAccumulator / static_cast<float>(strategy.milestones.size())) * 0.75F +
+            (anticipation.drift_confidence * 0.25F),
+        0.0F,
+        1.0F);
+
+    strategy.horizon_frames = static_cast<std::uint64_t>((std::max)(
+        std::size_t{6U},
+        strategy.milestones.size() * 4U + static_cast<std::size_t>(anticipation.horizon_frames)));
+
+    return strategy;
+}
+
+PreemptionDecision EvaluatePreemption(
+    const TemporalStrategyPlan& strategy,
+    const AnticipationSignal& anticipation,
+    const ReflexDecision& decision,
+    const std::vector<ReflexBundle>& bundles) {
+    PreemptionDecision preemption;
+
+    if (!strategy.active) {
+        preemption.reason = "strategy_inactive";
+        preemption.confidence = 0.0F;
+        return preemption;
+    }
+
+    if (bundles.empty()) {
+        preemption.should_preempt = true;
+        preemption.reason = "no_bundle_candidates";
+        preemption.suggested_source = "meta_policy";
+        preemption.confidence = 0.85F;
+        return preemption;
+    }
+
+    const ReflexBundle* highest = &bundles.front();
+    for (const ReflexBundle& bundle : bundles) {
+        if (bundle.priority > highest->priority + 0.0001F) {
+            highest = &bundle;
+        } else if (std::abs(bundle.priority - highest->priority) <= 0.0001F && bundle.source < highest->source) {
+            highest = &bundle;
+        }
+    }
+
+    const float priorityDelta = std::clamp(highest->priority - decision.priority, 0.0F, 1.0F);
+    const float anticipationBoost = anticipation.actionable ? (anticipation.drift_confidence * 0.35F) : 0.0F;
+    preemption.confidence = std::clamp(priorityDelta + anticipationBoost, 0.0F, 1.0F);
+
+    if (preemption.confidence >= 0.45F && highest->priority >= 0.70F) {
+        preemption.should_preempt = true;
+        preemption.reason = anticipation.actionable ? "anticipation_override" : "higher_priority_bundle";
+        preemption.suggested_source = highest->source;
+    } else {
+        preemption.reason = "keep_current_plan";
+        preemption.suggested_source = highest->source;
+    }
+
+    return preemption;
 }
 
 std::string SerializeContinuousActionJson(const ContinuousAction& action) {
@@ -916,6 +1325,17 @@ std::string SerializeSkillJson(const Skill& skill) {
     json << "\"attempts\":" << skill.attempts << ",";
     json << "\"success_count\":" << skill.success_count << ",";
     json << "\"updated_at_ms\":" << skill.updated_at_ms << ",";
+    json << "\"category\":\"" << EscapeJson(skill.category) << "\",";
+    json << "\"complexity_level\":" << skill.complexity_level << ",";
+    json << "\"estimated_frames\":" << skill.estimated_frames << ",";
+    json << "\"dependencies\":[";
+    for (std::size_t index = 0; index < skill.dependencies.size(); ++index) {
+        if (index > 0) {
+            json << ",";
+        }
+        json << "\"" << EscapeJson(skill.dependencies[index]) << "\"";
+    }
+    json << "],";
     json << "\"sequence\":[";
     for (std::size_t index = 0; index < skill.sequence.size(); ++index) {
         if (index > 0) {
@@ -941,6 +1361,124 @@ std::string SerializeSkillsJson(const std::vector<Skill>& skills) {
         json << SerializeSkillJson(skills[index]);
     }
     json << "]";
+    return json.str();
+}
+
+std::string SerializeSkillNodeJson(const SkillNode& node) {
+    std::ostringstream json;
+    json << "{";
+    json << "\"id\":\"" << EscapeJson(node.id) << "\",";
+    json << "\"name\":\"" << EscapeJson(node.name) << "\",";
+    json << "\"category\":\"" << EscapeJson(node.category) << "\",";
+    json << "\"children\":[";
+    for (std::size_t index = 0; index < node.children.size(); ++index) {
+        if (index > 0) {
+            json << ",";
+        }
+        json << "\"" << EscapeJson(node.children[index]) << "\"";
+    }
+    json << "],";
+    json << "\"conditions\":[";
+    for (std::size_t index = 0; index < node.conditions.size(); ++index) {
+        if (index > 0) {
+            json << ",";
+        }
+        json << "{";
+        json << "\"field\":\"" << EscapeJson(node.conditions[index].field) << "\",";
+        json << "\"expected\":\"" << EscapeJson(node.conditions[index].expected) << "\"";
+        json << "}";
+    }
+    json << "],";
+    json << "\"last_outcome\":{";
+    json << "\"success\":" << (node.last_outcome.success ? "true" : "false") << ",";
+    json << "\"confidence\":" << node.last_outcome.confidence << ",";
+    json << "\"note\":\"" << EscapeJson(node.last_outcome.note) << "\"";
+    json << "}";
+    json << "}";
+    return json.str();
+}
+
+std::string SerializeSkillNodesJson(const std::vector<SkillNode>& nodes) {
+    std::ostringstream json;
+    json << "[";
+    for (std::size_t index = 0; index < nodes.size(); ++index) {
+        if (index > 0) {
+            json << ",";
+        }
+        json << SerializeSkillNodeJson(nodes[index]);
+    }
+    json << "]";
+    return json.str();
+}
+
+std::string SerializeAnticipationSignalJson(const AnticipationSignal& signal) {
+    std::ostringstream json;
+    json << "{";
+    json << "\"horizon_frames\":" << signal.horizon_frames << ",";
+    json << "\"events\":[";
+    for (std::size_t index = 0; index < signal.events.size(); ++index) {
+        if (index > 0) {
+            json << ",";
+        }
+        const AnticipationEvent& event = signal.events[index];
+        json << "{";
+        json << "\"object_id\":\"" << EscapeJson(event.object_id) << "\",";
+        json << "\"future_position\":{";
+        json << "\"x\":" << event.future_position.x << ",";
+        json << "\"y\":" << event.future_position.y;
+        json << "},";
+        json << "\"confidence\":" << event.confidence;
+        json << "}";
+    }
+    json << "],";
+    json << "\"anticipated_affordances\":[";
+    for (std::size_t index = 0; index < signal.anticipated_affordances.size(); ++index) {
+        if (index > 0) {
+            json << ",";
+        }
+        json << "\"" << EscapeJson(signal.anticipated_affordances[index]) << "\"";
+    }
+    json << "],";
+    json << "\"drift_confidence\":" << signal.drift_confidence << ",";
+    json << "\"actionable\":" << (signal.actionable ? "true" : "false") << ",";
+    json << "\"reason\":\"" << EscapeJson(signal.reason) << "\"";
+    json << "}";
+    return json.str();
+}
+
+std::string SerializeTemporalStrategyJson(const TemporalStrategyPlan& strategy) {
+    std::ostringstream json;
+    json << "{";
+    json << "\"strategy_id\":\"" << EscapeJson(strategy.strategy_id) << "\",";
+    json << "\"goal\":\"" << EscapeJson(strategy.goal) << "\",";
+    json << "\"active\":" << (strategy.active ? "true" : "false") << ",";
+    json << "\"confidence\":" << strategy.confidence << ",";
+    json << "\"horizon_frames\":" << strategy.horizon_frames << ",";
+    json << "\"milestones\":[";
+    for (std::size_t index = 0; index < strategy.milestones.size(); ++index) {
+        if (index > 0) {
+            json << ",";
+        }
+        const StrategyMilestone& milestone = strategy.milestones[index];
+        json << "{";
+        json << "\"skill_name\":\"" << EscapeJson(milestone.skill_name) << "\",";
+        json << "\"target_object_id\":\"" << EscapeJson(milestone.target_object_id) << "\",";
+        json << "\"completed\":" << (milestone.completed ? "true" : "false");
+        json << "}";
+    }
+    json << "]";
+    json << "}";
+    return json.str();
+}
+
+std::string SerializePreemptionDecisionJson(const PreemptionDecision& decision) {
+    std::ostringstream json;
+    json << "{";
+    json << "\"should_preempt\":" << (decision.should_preempt ? "true" : "false") << ",";
+    json << "\"reason\":\"" << EscapeJson(decision.reason) << "\",";
+    json << "\"suggested_source\":\"" << EscapeJson(decision.suggested_source) << "\",";
+    json << "\"confidence\":" << decision.confidence;
+    json << "}";
     return json.str();
 }
 

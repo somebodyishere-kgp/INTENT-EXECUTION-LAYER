@@ -69,6 +69,9 @@ void CliParser::PrintHelp() {
     std::cout << "  iee demo presentation|browser [--json] [--run]\n";
     std::cout << "  iee ure live [--samples <N>] [--interval_ms <MS>] [--execute true|false] [--json]\n";
     std::cout << "  iee ure debug [--bundles] [--continuous] [--json]\n";
+    std::cout << "  iee ure skills [--active] [--limit <N>] [--json]\n";
+    std::cout << "  iee ure anticipation [--json]\n";
+    std::cout << "  iee ure strategy [--json]\n";
     std::cout << "  iee ure demo realtime [--goal \"<goal>\"] [--samples <N>] [--interval_ms <MS>] [--json]\n";
     std::cout << "  iee trace [<trace_id>] [--limit <N>]\n";
     std::cout << "  iee api [--port 8787] [--once]\n";

@@ -37,33 +37,73 @@
 *.out
 *.app
 
-# debug information files
+# Debug information files
 *.dwo
 
 # Build outputs
-build/
-out/
+/build/
+/out/
 
 # CMake generated files
 CMakeCache.txt
 CMakeFiles/
 cmake_install.cmake
 CTestTestfile.cmake
+Makefile
+CMakeLists.txt.user
 
 # MSVC artifacts
 *.idb
 *.exp
 *.vcxproj.user
+*.suo
+*.user
+*.ncb
+*.sdf
+*.opensdf
 
 # Logs and temp files
 *.log
 *.tmp
 *.bak
+*.swp
+*.swo
+*.pid
 
-# Runtime reflex persistence artifacts
-artifacts/reflex/*.json
-artifacts/reflex/*.tsv
+# OS generated files
+.DS_Store
+Thumbs.db
+Desktop.ini
+ehthumbs.db
+Icon?
+._*
+
+# Python and environment artifacts
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.python-version
+.env
+.env.*
+.venv/
+venv/
+ENV/
+env/
+.pip-wheel-metadata/
+.python-version
+.mypy_cache/
+.pytest_cache/
+
+# IDE/editor files
+.vscode/
+.idea/
+*.code-workspace
+*.sublime-project
+*.sublime-workspace
+
+# Local runtime artifacts
+artifacts/
 
 # Local assistant scaffolding
 .agents/
-.github/

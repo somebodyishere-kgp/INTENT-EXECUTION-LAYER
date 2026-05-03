@@ -145,3 +145,67 @@ Telemetry remains merged through existing reflex telemetry surfaces.
 - Test: ctest --test-dir build -C Release --output-on-failure
 
 Integration coverage now includes bundles/attention/prediction endpoints and richer goal payload schema.
+
+## v4.0 Phase 16 Additive Layer
+
+v4.0 extends the existing v3.2.1 coordination stack with deterministic skill intelligence.
+
+New runtime primitives in ReflexCoordination:
+
+- SkillCondition and SkillOutcome for explicit skill state gating.
+- SkillNode for hierarchical skill composition with deterministic child ordering.
+- AnticipationSignal and AnticipationEvent for short-horizon future-state awareness.
+- TemporalStrategyPlan and StrategyMilestone for goal-conditioned multi-step intent planning.
+- PreemptionDecision for bounded runtime override decisions.
+
+### Extended decision loop
+
+```text
+EnvironmentState -> UniversalReflexAgent::Step
+                 -> AttentionMap + PredictedState
+                 -> Specialist bundles + Meta bundle
+                 -> MicroPlanner refinement
+                 -> SkillMemoryStore::RankSkillsForGoal
+                 -> SkillMemoryStore::BuildHierarchy
+                 -> BuildAnticipationSignal
+                 -> BuildTemporalStrategy
+                 -> EvaluatePreemption
+                 -> ActionCoordinator + ContinuousController
+                 -> Intent mapping + telemetry + persistence
+```
+
+Fallback behavior remains additive:
+
+- If no ranked skills exist, strategy uses goal-preferred fallback milestones.
+- If anticipation is low confidence, strategy remains monitor-only.
+- If preemption confidence is below threshold, existing bundle ordering is preserved.
+- If any v4.0 signal is empty, v3.2.1 execution path remains intact.
+
+### Runtime observability additions
+
+URE status now includes:
+
+- skill_hierarchy_frames
+- anticipation_frames
+- strategy_frames
+- preempted_frames
+- ranked_skills
+- skill_hierarchy
+- anticipation
+- strategy
+- preemption
+
+New URE API surfaces:
+
+- GET /ure/skills
+- GET /ure/skills/active
+- GET /ure/anticipation
+- GET /ure/strategy
+
+### Determinism and bounded complexity
+
+- Skill ranking uses stable token overlap and bounded scoring heuristics.
+- Hierarchy construction is sorted and size-bounded.
+- Anticipation events are capped and confidence-clamped.
+- Strategy milestone count is bounded.
+- Preemption applies deterministic tie-break ordering by source and priority.

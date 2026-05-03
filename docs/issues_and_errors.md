@@ -54,3 +54,35 @@
 ### 3. Prediction model is deterministic and short horizon only
 - Current behavior: predictions are center-velocity extrapolations with bounded confidence heuristics.
 - Risk: complex non-linear motion remains approximate by design.
+
+## Resolved During v4.0 Phase 16 Integration
+
+### 7. Skill persistence schema had no room for hierarchy metadata
+- Symptom: v3.2.1 skill store only persisted name/attempts/sequence fields.
+- Root cause: flat TSV schema did not include category/dependency or complexity metadata.
+- Fix: extended load/save paths to support category, complexity_level, estimated_frames, dependencies while remaining backward-compatible with old records.
+- Result: existing skills load safely and new v4.0 metadata persists deterministically.
+
+### 8. Runtime state lacked slots for anticipation, strategy, and preemption snapshots
+- Symptom: no place to expose v4.0 planning signals through /ure/status.
+- Root cause: UreRuntimeState was v3.2.1 coordination-only.
+- Fix: added ranked skill/hierarchy snapshots, anticipation, strategy, preemption, and per-layer frame counters.
+- Result: v4.0 signals are now queryable and testable without changing legacy routes.
+
+### 9. URE API route surface did not include Phase 16 observability endpoints
+- Symptom: operators could not inspect active skills, anticipation, or strategy plans.
+- Root cause: API only exposed bundles/attention/prediction diagnostics.
+- Fix: added GET /ure/skills, /ure/skills/active, /ure/anticipation, and /ure/strategy.
+- Result: full v4.0 state is exposed for debug and integration testing.
+
+### 10. Editor diagnostics produced a false parse error in CliApp despite successful compilation
+- Symptom: get_errors reported "expected an identifier" in ReadPort while Release build succeeded.
+- Root cause: stale/inaccurate editor diagnostic state, not compiler failure.
+- Fix: validated with cmake --build build --config Release and retained clean compile behavior.
+- Result: build and test pipeline remains the source of truth for C++ validation in this environment.
+
+## Current Known Risks (v4.0, Non-Blocking)
+
+1. CMake extension configure path can still fail intermittently in this environment; command-line build remains reliable.
+2. Preemption currently boosts existing bundle priority rather than hard swapping complete execution trees.
+3. Strategy synthesis is bounded and deterministic by design; richer long-horizon planning remains future work.
